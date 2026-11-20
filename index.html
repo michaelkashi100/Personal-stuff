@@ -29,6 +29,7 @@
   #controls { position:absolute; left:0; right:0; bottom:0; height:150px; background:var(--card); padding:10px 14px calc(10px + env(safe-area-inset-bottom)); display:flex; flex-direction:column; gap:8px; }
   #controls .row { display:flex; gap:8px; align-items:center; }
   #controls input[type=range] { flex:1; }
+  .btn2 { background:#334155; color:var(--fg); border:0; border-radius:10px; padding:10px 14px; font-size:.95rem; }
   select,#controls button { background:#334155; color:var(--fg); border:0; border-radius:8px; padding:8px 12px; font-size:.95rem; }
     #summary { color:var(--mute); font-size:.85rem; flex:1; }
   #controls .meta { justify-content:space-between; }
@@ -67,7 +68,7 @@
   <button class="btn" id="pick">Choose file</button>
   <input type="file" id="file" accept=".json,application/json" hidden multiple>
   <p id="status"></p>
-  <p style="font-size:.75rem;opacity:.6">build 7 (arrival legs)</p>
+  <p style="font-size:.75rem;opacity:.6">build 8 (remembers file)</p>
 </section>
 
 <section id="app">
