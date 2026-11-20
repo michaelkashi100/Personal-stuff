@@ -7,14 +7,17 @@ const raw = (seed, dayOffset) => simulate(seed, COMMUTE, { velocity: true }).jso
   const day1 = JSON.stringify({ rawSignals: raw(7, 0) }), both = JSON.stringify({ rawSignals: raw(7, 0).concat(raw(8, 1)) });
   const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { width: 390, height: 780 } });
   await ctx.addInitScript(() => {
-    window.__nat = { recording: false, fine: true, bg: true, activity: true, fixes: 0, first: Date.now() - 864e5, last: Date.now() - 120000, json: '', calls: [] };
+    window.__nat = { bridge: 2, build: 3, bundle: 1700000000, latestBuild: 3, autoUpdate: true, checking: false, installing: false, updateMsg: '', recording: false, fine: true, bg: true, activity: true, fixes: 0, first: Date.now() - 864e5, last: Date.now() - 120000, json: '', calls: [] };
     window.TLNative = {
-      status: () => JSON.stringify({ native: true, recording: __nat.recording, fine: __nat.fine, bg: __nat.bg, activity: __nat.activity, notifications: true, fixes: __nat.fixes, first: __nat.first, last: __nat.last }),
+      status: () => JSON.stringify({ native: true, recording: __nat.recording, fine: __nat.fine, bg: __nat.bg, activity: __nat.activity, notifications: true, fixes: __nat.fixes, first: __nat.first, last: __nat.last, ...(__nat.bridge ? { bridge: __nat.bridge, build: __nat.build, bundle: __nat.bundle, latestBuild: __nat.latestBuild, autoUpdate: __nat.autoUpdate, checking: __nat.checking, installing: __nat.installing, updateMsg: __nat.updateMsg } : {}) }),
       recordsJson: () => { __nat.calls.push('records'); return __nat.json; },
       setRecording: (on) => { __nat.calls.push('rec:' + on); __nat.recording = on; setTimeout(() => window.__tlNativeChanged && window.__tlNativeChanged(), 10); },
       keepScreenOn: (on) => { __nat.calls.push('awake:' + on); },
       openSettings: (k) => { __nat.calls.push('settings:' + k); },
       exportBackup: () => JSON.stringify({ ok: true, name: 'timeline-test.json' }),
+      checkForUpdates: () => { __nat.calls.push('check'); __nat.updateMsg = 'Everything is up to date.'; setTimeout(() => window.__tlNativeChanged && window.__tlNativeChanged(), 10); },
+      installUpdate: () => { __nat.calls.push('install'); },
+      setAutoUpdate: (on) => { __nat.calls.push('auto:' + on); __nat.autoUpdate = on; },
       clearRecorded: () => { __nat.calls.push('clear'); __nat.fixes = 0; __nat.json = ''; },
     };
   });
@@ -46,6 +49,24 @@ const raw = (seed, dayOffset) => simulate(seed, COMMUTE, { velocity: true }).jso
   await push(both, 2000); await p.waitForTimeout(3500);
   const days2 = await p.evaluate(() => document.querySelectorAll('#day option').length);
   ok(await p.isVisible('#recWrap') && days2 > days1, 'new recordings are picked up when the app comes to the front, and you stay on Insights (' + days1 + ' -> ' + days2 + ' days)');
+
+  // 4b. updates: the card, the recorder update button, the switch, and the page reloading when new screens arrive
+  card = await p.innerText('#updWrap');
+  ok(/APP UPDATES/i.test(card) && /Recorder build 3/.test(card) && /Screens and analysis from/.test(card), 'the App updates card shows the versions: ' + card.split('\n').filter(Boolean).slice(0, 3).join(' | '));
+  ok(!(await p.locator('#updInstall').count()), 'no update button while the recorder is current');
+  await p.click('#updCheck'); await p.waitForTimeout(150); ok((await calls()).includes('check') && /up to date/.test(await p.innerText('#updWrap')), 'Check for updates asks the app and shows the answer');
+  await p.click('#swAuto'); ok((await calls()).includes('auto:false'), 'the automatic updates switch is passed to the app');
+  await p.evaluate(() => { __nat.latestBuild = 5; window.__tlNativeChanged(); }); await p.waitForTimeout(150);
+  ok(/new version of the recorder is ready/.test(await p.innerText('#updWrap')) && await p.isVisible('#updInstall'), 'a newer recorder build shows an Update now button');
+  await p.click('#updInstall'); ok((await calls()).includes('install'), 'Update now starts the install');
+  const navs = []; p.on('framenavigated', (f) => { if (f === p.mainFrame()) navs.push(1); });
+  await p.evaluate(() => window.__tlBundleUpdated()); await p.waitForTimeout(1800);
+  ok(navs.length >= 1, 'new screens arriving make the page reload itself');
+  await p.waitForTimeout(600); await p.evaluate(() => { __nat.recording = true; }); await push(both, 2000);                       // a real phone keeps its recordings; the fake bridge starts empty after a reload
+  await p.waitForSelector('#app', { state: 'visible', timeout: 15000 });
+  await p.evaluate(() => { __nat.latestBuild = 3; __nat.bridge = 0; window.__tlNativeChanged(); }); await p.click('nav button[data-v=stats]'); await p.waitForTimeout(300);
+  ok(/cannot update itself yet/.test(await p.innerText('#updWrap')) && await p.locator('#updWrap a[href*="timeline.apk"]').count() === 1, 'an app from before updates existed is told to install the latest one once');
+  await p.evaluate(() => { __nat.bridge = 2; window.__tlNativeChanged(); });
 
   // 4. permission states and buttons
   await p.evaluate(() => { __nat.bg = false; window.__tlNativeChanged(); }); await p.waitForTimeout(200);

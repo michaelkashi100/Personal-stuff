@@ -35,6 +35,12 @@ class MainActivity : ComponentActivity() {
     private lateinit var web: WebView
     private var fileCallback: ValueCallback<Array<Uri>>? = null
     private val asked = HashSet<String>()
+    @Volatile private var loader: WebViewAssetLoader? = null
+
+    companion object {
+        /** The activity that is on screen, so background work can tell the page something changed. */
+        @Volatile var current: MainActivity? = null
+    }
 
     private val pickFiles = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         fileCallback?.onReceiveValue(uris.toTypedArray())
@@ -46,9 +52,6 @@ class MainActivity : ComponentActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val loader = WebViewAssetLoader.Builder()
-            .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
-            .build()
         web = WebView(this).apply {
             setBackgroundColor(0xFF080D18.toInt())
             settings.javaScriptEnabled = true
@@ -59,7 +62,7 @@ class MainActivity : ComponentActivity() {
             addJavascriptInterface(Bridge(this@MainActivity), "TLNative")
             webViewClient = object : WebViewClient() {
                 override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
-                    loader.shouldInterceptRequest(request.url)
+                    (loader ?: buildLoader()).shouldInterceptRequest(request.url)
 
                 // Only our own pages may run here (they can reach the bridge); anything else opens in the browser.
                 override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
@@ -77,14 +80,39 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        loader = buildLoader()
         setContentView(web)
         web.loadUrl("https://${WebViewAssetLoader.DEFAULT_DOMAIN}/assets/www/index.html")
     }
 
     override fun onResume() {
         super.onResume()
+        current = this
         Recorder.register(this)   // picks up permissions granted in Settings, and re-registers after an update
+        Updater.checkAll(this, false)
         notifyWeb()
+    }
+
+    override fun onPause() {
+        if (current === this) current = null
+        super.onPause()
+    }
+
+    /** Serve the downloaded copy of the web app when it is newer than the copy inside the APK. */
+    private fun buildLoader(): WebViewAssetLoader {
+        val b = WebViewAssetLoader.Builder()
+        val dir = WebBundle.serveDir(this)
+        if (dir != null) b.addPathHandler("/assets/www/", WebViewAssetLoader.InternalStoragePathHandler(this, dir))
+        else b.addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
+        return b.build()
+    }
+
+    /** A newer copy of the web app was downloaded: serve it from now on and let the page reload itself. */
+    fun onWebUpdated() {
+        runOnUiThread {
+            loader = buildLoader()
+            web.evaluateJavascript("window.__tlBundleUpdated&&window.__tlBundleUpdated()", null)
+        }
     }
 
     /** Tell the page that something changed (it re-reads the status and any new recordings). */
@@ -122,7 +150,22 @@ class MainActivity : ComponentActivity() {
         val s = Db.get(this).stats()
         return "{\"native\":true,\"recording\":${Recorder.enabled(this)},\"fine\":${Recorder.hasFine(this)}," +
             "\"bg\":${Recorder.hasBackground(this)},\"activity\":${Recorder.hasActivity(this)}," +
-            "\"notifications\":${Recorder.hasNotifications(this)},\"fixes\":${s.count},\"first\":${s.first},\"last\":${s.last}}"
+            "\"notifications\":${Recorder.hasNotifications(this)},\"fixes\":${s.count},\"first\":${s.first},\"last\":${s.last}," +
+            "\"bridge\":2,\"build\":${Updater.installedBuild(this)},\"bundle\":${WebBundle.servingBuilt(this)},\"latestBuild\":${Updater.latestBuild}," +
+            "\"autoUpdate\":${Updater.auto(this)},\"checking\":${Updater.checking},\"installing\":${Updater.installing},\"updateMsg\":${jsonString(Updater.message)}}"
+    }
+
+    private fun jsonString(s: String): String {
+        val sb = StringBuilder("\"")
+        for (ch in s) {
+            when (ch) {
+                '"' -> sb.append("\\\"")
+                '\\' -> sb.append("\\\\")
+                '\n', '\r' -> sb.append(' ')
+                else -> sb.append(ch)
+            }
+        }
+        return sb.append('"').toString()
     }
 
     fun recordsJson(since: Long): String {
@@ -194,4 +237,10 @@ class Bridge(private val activity: MainActivity) {
     @JavascriptInterface fun clearRecorded() {
         Db.get(activity).clear()
     }
+
+    @JavascriptInterface fun checkForUpdates() = Updater.checkAll(activity, true)
+
+    @JavascriptInterface fun installUpdate() = Updater.installApk(activity)
+
+    @JavascriptInterface fun setAutoUpdate(on: Boolean) = Updater.setAuto(activity, on)
 }
