@@ -2,7 +2,8 @@
   const $ = (id) => document.getElementById(id);
   let data = null, map, dayLayer, marker, timer = null;
   const DAY = 86400000;
-  const COLORS = { walking: '#4ade80', 'on foot': '#4ade80', cycling: '#facc15', 'in passenger vehicle': '#f87171', driving: '#f87171', 'in train': '#a78bfa', 'in subway': '#a78bfa', flying: '#fb923c', path: '#38bdf8', unknown: '#94a3b8' };
+  const MODE_COLOR = { drive: '#f87171', walk: '#4ade80', transit: '#a78bfa', bike: '#facc15', other: '#38bdf8' };
+  const MODE_NAME = { drive: 'Driving', walk: 'Walking', transit: 'Transit', bike: 'Cycling', other: 'Moving' };
 
   // ---- Remember the file: a private copy kept in this browser's own storage on this device ----
   // Saved as slimmed-down text in IndexedDB; Cache Storage is the fallback. Failures are reported, never swallowed.
@@ -142,7 +143,7 @@
   // ---- Scenes: a day is an alternating list of moves and stays ----
   // The replay runs on its own "animation clock" (ms): a move takes 4.5-14 s depending on distance,
   // a stay is a ~2 s fast-forward of the real clock. Everything on screen is a pure function of that clock.
-  const MIN_STAY = 2 * 60000, MIN_GAP = 10 * 60000, STAY_MS = 2200, Z_IN = 17;
+  const SAME_PLACE = 150, MIN_STAY = 2 * 60000, MIN_GAP = 10 * 60000, STAY_MS = 2200, Z_IN = 17;
   let scenes = { items: [], V: 0 }, frac = 0, heading = 0, playing = false, lastTs = 0, raf = 0;
   let trail, trailGlow, trailColor = '', carEl, hudKey = '';
 
@@ -152,7 +153,6 @@
   const fmtDur = (ms) => { const m = Math.round(ms / 60000), h = Math.floor(m / 60); return h ? h + ' h' + (m % 60 ? ' ' + (m % 60) + ' m' : '') : m + ' m'; };
   const shortDur = (ms) => ms >= 3.6e6 ? (ms / 3.6e6).toFixed(1).replace(/\.0$/, '') + 'h' : Math.round(ms / 60000) + 'm';
   const clock = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  const modeName = (t) => ({ 'in passenger vehicle': 'Driving', driving: 'Driving', walking: 'Walking', 'on foot': 'Walking', running: 'Running', cycling: 'Cycling', 'in train': 'Train', 'in subway': 'Metro', 'in bus': 'Bus', flying: 'Flying' })[t] || 'Moving';
   function placeLabel(v) {
     const n = v.name || '';
     if (n && !/^[A-Za-z0-9_-]{20,}$/.test(n)) return n;           // skip opaque place IDs
@@ -164,11 +164,25 @@
     return dx === 0 && dy === 0 ? null : ((Math.atan2(dx, dy) * 180) / Math.PI + 360) % 360;
   }
 
-  function makeMove(path, t0, t1, type) {
+  // Guess how the user travelled: trust the activity label, but correct it when the speed makes no sense.
+  function modeOf(type, dist, dur) {
+    const kmh = dur > 60000 ? dist / 1000 / (dur / 3.6e6) : 0, t = String(type || '');
+    let m = null;
+    if (/passenger vehicle|^driving$|in vehicle|motorcycl|taxi|^in car$/.test(t)) m = 'drive';
+    else if (/walk|on foot|running|hiking/.test(t)) m = 'walk';
+    else if (/bus|train|subway|tram|metro|flying|ferry/.test(t)) m = 'transit';
+    else if (/cycl|bik/.test(t)) m = 'bike';
+    if (m === 'walk' && kmh >= 25 && dist > 1000) m = 'drive';
+    else if (m === 'drive' && kmh > 0 && kmh < 8 && dist < 1500) m = 'walk';
+    if (!m) m = dist >= 500 && kmh >= 20 ? 'drive' : (kmh > 0 && kmh < 7) || dist < 400 ? 'walk' : 'other';
+    return m;
+  }
+
+  function makeMove(path, t0, t1, type, dist) {
     const cum = [0];
     for (let i = 1; i < path.length; i++) cum.push(cum[i - 1] + TL.haversine(path[i - 1], path[i]));
-    const len = cum[cum.length - 1];
-    return { kind: 'move', t0, t1, type, path, cum, len, bounds: L.latLngBounds(path), vlen: len < 30 ? 1500 : Math.min(14000, 4500 + 1600 * Math.sqrt(len / 1000)) };
+    const len = cum[cum.length - 1], mode = modeOf(type, dist || len, t1 - t0);
+    return { kind: 'move', t0, t1, type, dist: dist || 0, mode, color: MODE_COLOR[mode], path, cum, len, bounds: L.latLngBounds(path), vlen: len < 30 ? 1500 : Math.min(14000, 4500 + 1600 * Math.sqrt(len / 1000)) };
   }
   // Point (and segment index) at a distance along a move; binary search over cumulative distance.
   function pointAt(s, d) {
@@ -184,8 +198,15 @@
 
   // Records.json has no visits: derive stays where the points stay within 150 m for 10+ minutes.
   function scenesFromPoints(d, end, items) {
-    const pts = data.points.filter((p) => p.t >= d && p.t < end).sort((a, b) => a.t - b.t);
     const ll = (p) => [p.lat, p.lng];
+    const raw = data.points.filter((p) => p.t >= d && p.t < end).sort((a, b) => a.t - b.t), pts = [];
+    for (let i = 0; i < raw.length; i++) {            // drop GPS spikes: isolated jumps away from and back to the same place
+      const a = raw[i - 1], b = raw[i], c = raw[i + 1];
+      if (a && c && TL.haversine(ll(a), ll(c)) < 100 && TL.haversine(ll(a), ll(b)) > 300 && TL.haversine(ll(b), ll(c)) > 300) continue;
+      const q = pts[pts.length - 1];                  // physically impossible jump (> 80 m/s) = bad fix
+      if (q && b.t > q.t && b.t - q.t < 600000 && TL.haversine(ll(q), ll(b)) / ((b.t - q.t) / 1000) > 80) continue;
+      pts.push(b);
+    }
     let run = [], i = 0;
     const flush = () => { if (run.length > 1) items.push(makeMove(run.map(ll), run[0].t, run[run.length - 1].t, 'path')); run = []; };
     while (i < pts.length) {
@@ -207,24 +228,31 @@
     for (const a of trips.filter((t) => t.type !== 'path')) {
       const p = paths.find((q) => !used.has(q) && q.start < a.end && q.end > a.start);   // richer GPS geometry, if any
       if (p) used.add(p);
-      items.push(makeMove(p ? p.path : a.path, a.start, a.end, a.type));
+      items.push(makeMove(p ? p.path : a.path, a.start, a.end, a.type, a.dist));
     }
     for (const p of paths) if (!used.has(p)) items.push(makeMove(p.path, p.start, p.end, 'path'));
     for (const v of data.visits) {
       const t0 = Math.max(v.start, d), t1 = Math.min(v.end, end);
-      if (t1 - t0 >= MIN_STAY) items.push({ kind: 'stay', t0, t1, lat: v.lat, lng: v.lng, name: placeLabel(v) });
+      if (t1 - t0 >= MIN_STAY) items.push({ kind: 'stay', t0, t1, lat: v.lat, lng: v.lng, name: placeLabel(v), nd: t1 - t0 });
     }
     if (!items.length) scenesFromPoints(d, end, items);
-    items.sort((a, b) => a.t0 - b.t0);
+    const real = items.filter((it) => it.kind !== 'move' || !TL.isWobble(it));     // noise around one spot is not a trip
+    real.sort((a, b) => a.t0 - b.t0);
     const out = [];
-    for (const it of items) {
+    for (const it of real) {
       const prev = out[out.length - 1];
-      if (prev && prev.kind === 'stay' && it.kind === 'stay' && TL.haversine([prev.lat, prev.lng], [it.lat, it.lng]) > 100) {
+      if (prev && prev.kind === 'stay' && it.kind === 'stay') {
+        if (TL.haversine([prev.lat, prev.lng], [it.lat, it.lng]) <= SAME_PLACE) {
+          // same place (a wobble or a split visit in between): one continuous stay
+          prev.t1 = Math.max(prev.t1, it.t1);
+          if (it.name !== 'Stopped' && (prev.name === 'Stopped' || (it.nd || 0) > (prev.nd || 0))) { prev.name = it.name; prev.nd = it.nd; }
+          continue;
+        }
         // arrived somewhere, then somewhere else, with no recorded trip between: draw the leg between them
         out.push(makeMove([[prev.lat, prev.lng], [it.lat, it.lng]], prev.t1, Math.max(prev.t1, it.t0), 'unknown'));
       } else if (prev && prev.kind === 'move' && it.t0 - prev.t1 > MIN_GAP) {   // unexplained gap after a move = time spent where it ended
         const q = prev.path[prev.path.length - 1];
-        if (it.kind === 'move' || TL.haversine(q, [it.lat, it.lng]) > 150) out.push({ kind: 'stay', t0: prev.t1, t1: it.t0, lat: q[0], lng: q[1], name: 'Stopped' });
+        if (it.kind === 'move' || TL.haversine(q, [it.lat, it.lng]) > SAME_PLACE) out.push({ kind: 'stay', t0: prev.t1, t1: it.t0, lat: q[0], lng: q[1], name: 'Stopped' });
       }
       out.push(it);
     }
@@ -261,7 +289,7 @@
     return { center: [ctr.lat, ctr.lng], zoom };
   }
 
-  const CAR = '<div class="ring"></div><div class="carwrap"><svg viewBox="0 0 24 44" width="30" height="55">' +
+  const CAR = '<div class="ring"></div><div class="dot"></div><div class="carwrap"><svg viewBox="0 0 24 44" width="30" height="55">' +
     '<rect x="0.5" y="8" width="3" height="9" rx="1.5" fill="#0b1220"/><rect x="20.5" y="8" width="3" height="9" rx="1.5" fill="#0b1220"/>' +
     '<rect x="0.5" y="27" width="3" height="9" rx="1.5" fill="#0b1220"/><rect x="20.5" y="27" width="3" height="9" rx="1.5" fill="#0b1220"/>' +
     '<rect x="3" y="2" width="18" height="40" rx="8" fill="#38bdf8" stroke="#fff" stroke-width="2"/>' +
@@ -276,7 +304,7 @@
     for (const s of items) {
       if (s.kind === 'move') {
         moving += s.t1 - s.t0;
-        L.polyline(s.path, { color: COLORS[s.type] || COLORS.unknown, weight: 3, opacity: 0.4, interactive: false }).addTo(dayLayer);
+        L.polyline(s.path, { color: s.color, weight: 3, opacity: 0.4, interactive: false }).addTo(dayLayer);
       } else {
         still += s.t1 - s.t0;
         const r = Math.min(18, 7 + 3 * Math.sqrt((s.t1 - s.t0) / 3.6e6));            // bigger circle = longer stay
@@ -298,7 +326,7 @@
     $('bar').innerHTML = items.map((s) => {
       const left = (s.v0 / V) * 100, w = (s.vlen / V) * 100;
       return s.kind === 'move'
-        ? `<div class="seg" style="left:${left}%;width:${w}%;background:${COLORS[s.type] || COLORS.unknown}"></div>`
+        ? `<div class="seg" style="left:${left}%;width:${w}%;background:${s.color}"></div>`
         : `<div class="seg still" style="left:${left}%;width:${w}%">${(s.vlen / V) * px >= 24 ? '<span>' + shortDur(s.t1 - s.t0) + '</span>' : ''}</div>`;
     }).join('');
     $('summary').textContent = items.length ? 'moving ' + fmtDur(moving) + ' · still ' + fmtDur(still) : '';
@@ -315,7 +343,7 @@
     marker.setLatLng(ll);
     // trail: the part of the current move already driven (or the whole previous move while parked)
     const src = s.kind === 'move' ? s : s.prev && s.prev.kind === 'move' ? s.prev : null;
-    const color = src ? COLORS[src.type] || COLORS.unknown : '';
+    const color = src ? src.color : '';
     if (color !== trailColor) { trailColor = color; if (color) { trail.setStyle({ color }); trailGlow.setStyle({ color }); } }
     const pts = !src ? [] : s.kind === 'move' ? src.path.slice(0, k).concat([ll]) : src.path;
     trail.setLatLngs(pts); trailGlow.setLatLngs(pts);
@@ -323,8 +351,9 @@
     let target = s.kind === 'move' ? bear : s.next && s.next.kind === 'move' ? startBearing(s.next) : s.prev && s.prev.kind === 'move' ? endBearing(s.prev) : null;
     if (target != null) heading = (heading + (((target - heading + 540) % 360) - 180) * 0.3 + 360) % 360;
     if (carEl) carEl.style.transform = 'rotate(' + heading.toFixed(1) + 'deg)';
-    const el = marker.getElement(); if (el) el.classList.toggle('stay', s.kind === 'stay');
-    const sub = s.kind === 'stay' ? s.name + ' · ' + fmtDur((s.t1 - s.t0) * f) : modeName(s.type) + ' · ' + (Math.max(0, s.len * (1 - p)) / 1000).toFixed(1) + ' km left';
+    const el = marker.getElement();
+    if (el) { el.classList.toggle('stay', s.kind === 'stay'); el.classList.toggle('drive', s.kind === 'move' && s.mode === 'drive'); }
+    const sub = s.kind === 'stay' ? s.name + ' · ' + fmtDur((s.t1 - s.t0) * f) : MODE_NAME[s.mode] + ' · ' + (Math.max(0, s.len * (1 - p)) / 1000).toFixed(1) + ' km left';
     setHud(clock(t), sub);
   }
   function setHud(a, b) { const key = a + '|' + b; if (key !== hudKey) { hudKey = key; $('hudTime').textContent = a; $('hudSub').textContent = b; } }
@@ -346,7 +375,7 @@
     playing = true; $('play').textContent = '⏸ Pause'; lastTs = performance.now();
     raf = requestAnimationFrame(tick);
   };
-  window.__tl = () => ({ zoom: map.getZoom(), heading, frac, V: scenes.V });   // test hook (read-only)
+  window.__tl = () => { const el = marker && marker.getElement(), cur = scenes.items.length ? locate(frac * scenes.V).s : null; return { zoom: map.getZoom(), heading, frac, V: scenes.V, items: scenes.items.map((s) => (s.kind === 'move' ? s.mode : 'stay')), cur: cur ? (cur.kind === 'move' ? cur.mode : 'stay') : null, car: !!(el && el.classList.contains('drive')) }; };   // test hook (read-only)
 
   async function dataInfo() {
     const el = $('dinfo'); if (!el) return;

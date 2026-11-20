@@ -58,6 +58,7 @@
     else if (json.locations) {                                               // Records.json
       for (const l of json.locations) {
         const ll = e7(l.latitudeE7, l.longitudeE7);
+        if (l.accuracy != null && l.accuracy > 100) continue;                // poor fix: ignore
         if (ll) out.points.push({ t: ms(l.timestamp), lat: ll[0], lng: ll[1] });
       }
     } else throw new Error('Unrecognised Timeline format');
@@ -82,11 +83,22 @@
     return d;
   }
 
+  // GPS wobble: a "trip" that is really noise around one spot (tiny, or a short loop back to where it started).
+  function isWobble(t) {
+    const p = t.path;
+    if (!p || p.length < 2 || t.type === 'still') return true;
+    let len = 0;
+    for (let i = 1; i < p.length; i++) len += haversine(p[i - 1], p[i]);
+    const net = haversine(p[0], p[p.length - 1]);
+    if ((t.dist || len) < 150) return true;
+    return net < 120 && len < 1500;
+  }
+
   // Stats for a year (or all years when year == null).
   function computeStats(data, year) {
     const inYear = (t) => year == null || new Date(t).getFullYear() === year;
     const visits = data.visits.filter((v) => inYear(v.start));
-    const trips = data.trips.filter((t) => inYear(t.start));
+    const trips = data.trips.filter((t) => inYear(t.start) && !isWobble(t));
     let totalDist = 0;
     const byType = {};
     // GPS 'path' segments overlap activity segments; only count them when nothing else exists.
@@ -113,6 +125,6 @@
     return { totalKm: totalDist / 1000, byTypeKm: Object.fromEntries(Object.entries(byType).map(([k, v]) => [k, v / 1000])), visitCount: visits.length, uniquePlaces: Object.keys(places).length, topPlaces, activeDays: days.size, longest };
   }
 
-  const api = { parseTimeline, computeStats, haversine, tripDistance, parseLatLng };
+  const api = { parseTimeline, computeStats, haversine, tripDistance, parseLatLng, isWobble };
   if (typeof module !== 'undefined') module.exports = api; else root.TL = api;
 })(typeof self !== 'undefined' ? self : this);
