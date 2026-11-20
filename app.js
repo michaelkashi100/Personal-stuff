@@ -44,12 +44,13 @@
 
   // ---- Map & replay ----
   function initMap() {
-    map = L.map('map', { zoomControl: false });
+    map = L.map('map', { zoomControl: false, zoomSnap: 0 });
+    map.getContainer().addEventListener('pointerdown', () => stop());   // touching the map pauses the replay
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
     dayLayer = L.layerGroup().addTo(map);
     const all = data.visits.map((v) => [v.lat, v.lng]).concat(data.points.map((p) => [p.lat, p.lng]));
-    // Background dots: draw on a canvas and cap at ~15k points so big files stay fast on a phone.
-    const step = Math.max(1, Math.ceil(all.length / 15000));
+    // Background dots: draw on a canvas and cap at ~3k points so big files stay fast on a phone.
+    const step = Math.max(1, Math.ceil(all.length / 3000));
     const canvas = L.canvas({ padding: 0.5 });
     for (let i = 0; i < all.length; i += step) L.circleMarker(all[i], { renderer: canvas, radius: 3, stroke: false, fillColor: '#38bdf8', fillOpacity: 0.25, interactive: false }).addTo(map);
     if (all.length) {
@@ -72,26 +73,47 @@
   }
 
   // ---- Scenes: a day is an alternating list of moves and stays ----
-  // The replay axis ("v") counts movement time at real length, but every stay gets a short fixed slot,
-  // so hours of standing still don't dominate. The stay's real duration is shown, not waited for.
-  const MIN_STAY = 2 * 60000, MIN_GAP = 10 * 60000, STAY_V = 3 * 60000;
-  let scenes = { items: [], V: 0 }, lastLabel = '';
+  // The replay runs on its own "animation clock" (ms): a move takes 4.5-14 s depending on distance,
+  // a stay is a ~2 s fast-forward of the real clock. Everything on screen is a pure function of that clock.
+  const MIN_STAY = 2 * 60000, MIN_GAP = 10 * 60000, STAY_MS = 2200, Z_IN = 17;
+  let scenes = { items: [], V: 0 }, frac = 0, heading = 0, playing = false, lastTs = 0, raf = 0;
+  let trail, trailGlow, trailColor = '', carEl, hudKey = '';
 
+  const sm = (x) => x * x * (3 - 2 * x);                                  // smoothstep
+  const win = (a, b, x) => sm(Math.min(1, Math.max(0, (x - a) / (b - a))));
+  const easeMove = (f) => f + 0.75 * (sm(f) - f);                         // slow -> fast -> slow
   const fmtDur = (ms) => { const m = Math.round(ms / 60000), h = Math.floor(m / 60); return h ? h + ' h' + (m % 60 ? ' ' + (m % 60) + ' m' : '') : m + ' m'; };
   const shortDur = (ms) => ms >= 3.6e6 ? (ms / 3.6e6).toFixed(1).replace(/\.0$/, '') + 'h' : Math.round(ms / 60000) + 'm';
   const clock = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const modeName = (t) => ({ 'in passenger vehicle': 'Driving', driving: 'Driving', walking: 'Walking', 'on foot': 'Walking', running: 'Running', cycling: 'Cycling', 'in train': 'Train', 'in subway': 'Metro', 'in bus': 'Bus', flying: 'Flying' })[t] || 'Moving';
   function placeLabel(v) {
     const n = v.name || '';
     if (n && !/^[A-Za-z0-9_-]{20,}$/.test(n)) return n;           // skip opaque place IDs
     const t = (v.type || '').toLowerCase().replace(/_/g, ' ');
     return t && t !== 'unknown' && t !== 'place' ? t[0].toUpperCase() + t.slice(1) : 'Stopped';
   }
+  function bearing(a, b) {
+    const dy = b[0] - a[0], dx = (b[1] - a[1]) * Math.cos(((a[0] + b[0]) * Math.PI) / 360);
+    return dx === 0 && dy === 0 ? null : ((Math.atan2(dx, dy) * 180) / Math.PI + 360) % 360;
+  }
 
   function makeMove(path, t0, t1, type) {
     const cum = [0];
     for (let i = 1; i < path.length; i++) cum.push(cum[i - 1] + TL.haversine(path[i - 1], path[i]));
-    return { kind: 'move', t0, t1, type, path, cum, len: cum[cum.length - 1], vlen: Math.max(t1 - t0, 30000) };
+    const len = cum[cum.length - 1];
+    return { kind: 'move', t0, t1, type, path, cum, len, bounds: L.latLngBounds(path), vlen: len < 30 ? 1500 : Math.min(14000, 4500 + 1600 * Math.sqrt(len / 1000)) };
   }
+  // Point (and segment index) at a distance along a move; binary search over cumulative distance.
+  function pointAt(s, d) {
+    if (s.len <= 0) return { ll: s.path[0], k: 1 };
+    d = Math.max(0, Math.min(s.len, d));
+    let lo = 1, hi = s.cum.length - 1;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (s.cum[mid] < d) lo = mid + 1; else hi = mid; }
+    const a = s.path[lo - 1], b = s.path[lo], u = (d - s.cum[lo - 1]) / (s.cum[lo] - s.cum[lo - 1] || 1);
+    return { ll: [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u], k: lo };
+  }
+  const startBearing = (s) => { const d = Math.max(25, s.len * 0.02); return bearing(s.path[0], pointAt(s, d).ll); };
+  const endBearing = (s) => { const d = Math.max(25, s.len * 0.02); return bearing(pointAt(s, s.len - d).ll, s.path[s.path.length - 1]); };
 
   // Records.json has no visits: derive stays where the points stay within 150 m for 10+ minutes.
   function scenesFromPoints(d, end, items) {
@@ -136,49 +158,58 @@
       }
       out.push(it);
     }
-    const moveV = out.reduce((a, s) => a + (s.kind === 'move' ? s.vlen : 0), 0), nStay = out.filter((s) => s.kind === 'stay').length;
-    // each stay gets ~10% of the movement time, but all stays together never exceed ~60% of it
-    const stayV = Math.max(STAY_V, Math.min(moveV * 0.1, (moveV * 0.6) / Math.max(1, nStay)));
     let off = 0;
-    for (const s of out) { if (s.kind === 'stay') s.vlen = stayV; s.v0 = off; off += s.vlen; }
+    out.forEach((s, i) => { if (s.kind === 'stay') s.vlen = STAY_MS; s.v0 = off; off += s.vlen; s.prev = out[i - 1]; s.next = out[i + 1]; });
     return { items: out, V: off };
   }
 
   function locate(v) {
     let s = scenes.items[0];
     for (const it of scenes.items) { if (it.v0 <= v) s = it; else break; }
-    const f = Math.min(1, Math.max(0, (v - s.v0) / s.vlen)), t = s.t0 + (s.t1 - s.t0) * f;
-    if (s.kind === 'stay') return { s, t, f, ll: [s.lat, s.lng] };
-    let ll = s.path[0];
-    if (s.len > 0) {
-      const target = s.len * f; let k = 1;
-      while (k < s.cum.length - 1 && s.cum[k] < target) k++;
-      const a = s.path[k - 1], b = s.path[k], u = (target - s.cum[k - 1]) / (s.cum[k] - s.cum[k - 1] || 1);
-      ll = [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u];
-    }
-    return { s, t, f, ll };
+    const f0 = Math.min(1, Math.max(0, (v - s.v0) / s.vlen));
+    if (s.kind === 'stay') { const f = sm(f0); return { s, f, p: 0, t: s.t0 + (s.t1 - s.t0) * f, ll: [s.lat, s.lng] }; }
+    const p = easeMove(f0), d = s.len * p, cur = pointAt(s, d), step = Math.max(25, s.len * 0.02);
+    const bear = s.len > 0 ? bearing(pointAt(s, d - step / 2).ll, pointAt(s, d + step).ll) : null;
+    return { s, f: f0, p, t: s.t0 + (s.t1 - s.t0) * p, ll: cur.ll, k: cur.k, bear };
   }
 
+  // Camera: zoomed in by default; during a move, ease out until the whole trip fits, hold, then ease back in.
+  // The same easing drives the car's speed, so it is slow while the camera moves and fast while it is wide.
+  function cameraFor(s, p, carLL) {
+    if (s.kind === 'stay') return { center: [s.lat, s.lng], zoom: Z_IN };
+    if (s.zfit === undefined) { const z = map.getBoundsZoom(s.bounds, false, L.point(70, 90)); s.zfit = isFinite(z) ? Math.max(2, z) : Z_IN; }
+    const w = win(0, 0.2, p) * (1 - win(0.8, 1, p));
+    const zfit = Math.min(Z_IN, s.zfit), k = Math.min(1, Math.max(0, (Z_IN - s.zfit) / 0.7)), c = s.bounds.getCenter(), m = w * k;
+    return { center: [carLL[0] + (c.lat - carLL[0]) * m, carLL[1] + (c.lng - carLL[1]) * m], zoom: Z_IN + (zfit - Z_IN) * w };
+  }
+
+  const CAR = '<div class="ring"></div><div class="carwrap"><svg viewBox="0 0 24 44" width="24" height="44">' +
+    '<rect x="0.5" y="8" width="3" height="9" rx="1.5" fill="#0b1220"/><rect x="20.5" y="8" width="3" height="9" rx="1.5" fill="#0b1220"/>' +
+    '<rect x="0.5" y="27" width="3" height="9" rx="1.5" fill="#0b1220"/><rect x="20.5" y="27" width="3" height="9" rx="1.5" fill="#0b1220"/>' +
+    '<rect x="3" y="2" width="18" height="40" rx="8" fill="#38bdf8" stroke="#fff" stroke-width="2"/>' +
+    '<rect x="6" y="10" width="12" height="9" rx="2.5" fill="#0b1220" opacity=".85"/><rect x="7" y="29" width="10" height="6" rx="2" fill="#0b1220" opacity=".6"/>' +
+    '<rect x="5.5" y="3.5" width="3.5" height="2" rx="1" fill="#fde68a"/><rect x="15" y="3.5" width="3.5" height="2" rx="1" fill="#fde68a"/></svg></div>';
+
   function showDay(d) {
-    stop(); dayLayer.clearLayers(); lastLabel = '';
+    stop(); dayLayer.clearLayers(); hudKey = ''; trailColor = ''; heading = 0;
     scenes = buildScenes(d);
-    const items = scenes.items, bounds = [];
+    const items = scenes.items;
     let moving = 0, still = 0;
     for (const s of items) {
       if (s.kind === 'move') {
         moving += s.t1 - s.t0;
-        L.polyline(s.path, { color: COLORS[s.type] || COLORS.unknown, weight: 4, opacity: 0.85 }).addTo(dayLayer);
-        s.path.forEach((p) => bounds.push(p));
+        L.polyline(s.path, { color: COLORS[s.type] || COLORS.unknown, weight: 3, opacity: 0.4, interactive: false }).addTo(dayLayer);
       } else {
-        still += s.t1 - s.t0; bounds.push([s.lat, s.lng]);
+        still += s.t1 - s.t0;
         const r = Math.min(18, 7 + 3 * Math.sqrt((s.t1 - s.t0) / 3.6e6));            // bigger circle = longer stay
         L.circleMarker([s.lat, s.lng], { radius: r, color: '#fff', weight: 2, fillColor: '#f43f5e', fillOpacity: 0.55 })
           .bindTooltip(s.name + ' · ' + clock(s.t0) + '–' + clock(s.t1) + ' (' + fmtDur(s.t1 - s.t0) + ')').addTo(dayLayer);
       }
     }
-    marker = L.marker([0, 0], { icon: L.divIcon({ className: 'live', html: '<div class="ring"></div><div class="core"></div>', iconSize: [24, 24] }), interactive: false, keyboard: false })
-      .bindTooltip('', { permanent: true, direction: 'top', offset: [0, -14], className: 'livetip' }).addTo(dayLayer);
-    if (bounds.length) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 16 });
+    trailGlow = L.polyline([], { weight: 13, opacity: 0.22, lineCap: 'round', interactive: false }).addTo(dayLayer);
+    trail = L.polyline([], { weight: 5, opacity: 1, lineCap: 'round', interactive: false }).addTo(dayLayer);
+    marker = L.marker([0, 0], { icon: L.divIcon({ className: 'live', html: CAR, iconSize: [24, 24] }), interactive: false, keyboard: false, zIndexOffset: 1000 }).addTo(dayLayer);
+    carEl = marker.getElement().querySelector('.carwrap');
     renderBar(items, moving, still);
     $('scrub').value = 0; seek(0);
   }
@@ -195,28 +226,48 @@
     $('summary').textContent = items.length ? 'moving ' + fmtDur(moving) + ' · still ' + fmtDur(still) : '';
   }
 
-  function seek(frac) {
-    $('fill').style.width = frac * 100 + '%'; $('playhead').style.left = frac * 100 + '%';
-    if (!scenes.items.length) { $('dayLabel').textContent = 'no data'; return; }
-    const { s, t, f, ll } = locate(frac * scenes.V);
+  function seek(fr) {
+    frac = fr;
+    $('fill').style.width = fr * 100 + '%'; $('playhead').style.left = fr * 100 + '%';
+    if (!scenes.items.length) { setHud('--:--', 'no data for this day'); return; }
+    const { s, f, p, t, ll, k, bear } = locate(fr * scenes.V);
+    const cam = cameraFor(s, p, ll);
+    map.setView(cam.center, cam.zoom, { animate: false });
     marker.setLatLng(ll);
+    // trail: the part of the current move already driven (or the whole previous move while parked)
+    const src = s.kind === 'move' ? s : s.prev && s.prev.kind === 'move' ? s.prev : null;
+    const color = src ? COLORS[src.type] || COLORS.unknown : '';
+    if (color !== trailColor) { trailColor = color; if (color) { trail.setStyle({ color }); trailGlow.setStyle({ color }); } }
+    const pts = !src ? [] : s.kind === 'move' ? src.path.slice(0, k).concat([ll]) : src.path;
+    trail.setLatLngs(pts); trailGlow.setLatLngs(pts);
+    // heading: face the direction of travel; while parked, turn toward the next route
+    let target = s.kind === 'move' ? bear : s.next && s.next.kind === 'move' ? startBearing(s.next) : s.prev && s.prev.kind === 'move' ? endBearing(s.prev) : null;
+    if (target != null) heading = (heading + (((target - heading + 540) % 360) - 180) * 0.3 + 360) % 360;
+    if (carEl) carEl.style.transform = 'rotate(' + heading.toFixed(1) + 'deg)';
     const el = marker.getElement(); if (el) el.classList.toggle('stay', s.kind === 'stay');
-    $('dayLabel').textContent = clock(t);
-    const text = s.kind === 'stay' ? s.name + ' · ' + fmtDur((s.t1 - s.t0) * f) : clock(t);
-    if (text !== lastLabel) { lastLabel = text; marker.setTooltipContent(text); }
+    const sub = s.kind === 'stay' ? s.name + ' · ' + fmtDur((s.t1 - s.t0) * f) : modeName(s.type) + ' · ' + (Math.max(0, s.len * (1 - p)) / 1000).toFixed(1) + ' km left';
+    setHud(clock(t), sub);
   }
-  $('scrub').oninput = () => seek($('scrub').value / 1000);
-  function stop() { if (timer) clearInterval(timer); timer = null; $('play').textContent = '▶ Play'; }
+  function setHud(a, b) { const key = a + '|' + b; if (key !== hudKey) { hudKey = key; $('hudTime').textContent = a; $('hudSub').textContent = b; } }
+
+  $('scrub').oninput = () => seek($('scrub').value / 100000);
+  function stop() { playing = false; cancelAnimationFrame(raf); $('play').textContent = '▶ Play'; }
+  function tick(ts) {
+    if (!playing) return;
+    const dt = Math.min(80, ts - lastTs); lastTs = ts;
+    seek(Math.min(1, frac + (dt * +$('speed').value) / scenes.V));
+    $('scrub').value = Math.round(frac * 100000);
+    if (frac >= 1) return stop();
+    raf = requestAnimationFrame(tick);
+  }
   $('play').onclick = () => {
-    if (timer) return stop();
-    if (+$('scrub').value >= 1000) $('scrub').value = 0;
-    $('play').textContent = '⏸ Pause';
-    timer = setInterval(() => {
-      const v = Math.min(1000, +$('scrub').value + +$('speed').value);
-      $('scrub').value = v; seek(v / 1000);
-      if (v >= 1000) stop();
-    }, 40);
+    if (playing) return stop();
+    if (!scenes.items.length) return;
+    if (frac >= 1) frac = 0;
+    playing = true; $('play').textContent = '⏸ Pause'; lastTs = performance.now();
+    raf = requestAnimationFrame(tick);
   };
+  window.__tl = () => ({ zoom: map.getZoom(), heading, frac, V: scenes.V });   // test hook (read-only)
 
   // ---- Stats ----
   function renderStats() {
