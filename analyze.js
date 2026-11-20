@@ -338,13 +338,20 @@
     const stays = tl.filter((s) => s.kind === 'stay' && inYear(s.t0)), legs = tl.filter((s) => s.kind === 'move' && inYear(s.t0));
     const byMode = {}; let total = 0, longest = null;
     for (const l of legs) { byMode[l.mode] = (byMode[l.mode] || 0) + l.dist / 1000; total += l.dist; if (!longest || l.dist > longest.dist) longest = { dist: l.dist, mode: l.mode, start: l.t0 }; }
-    const places = {};
+    // one place = every stay within 150 m of it (a coarse grid would split a home near a cell edge into two)
+    const places = [];
     for (const s of stays) {
-      const k = s.lat.toFixed(3) + ',' + s.lng.toFixed(3), p = (places[k] = places[k] || { lat: s.lat, lng: s.lng, name: '', visits: 0, hours: 0 });
-      p.visits++; p.hours += (s.t1 - s.t0) / 3.6e6; if (s.name && s.name !== 'Stopped' && !p.name) p.name = s.name;
+      let p = null, pd = 150;
+      for (const q of places) { const d = d4(s.lat, s.lng, q.lat, q.lng); if (d < pd) { pd = d; p = q; } }
+      if (!p) { p = { lat: s.lat, lng: s.lng, name: '', visits: 0, hours: 0, names: {} }; places.push(p); }
+      const h = (s.t1 - s.t0) / 3.6e6;
+      p.lat += (s.lat - p.lat) / (p.visits + 1); p.lng += (s.lng - p.lng) / (p.visits + 1);
+      p.visits++; p.hours += h;
+      if (s.name && s.name !== 'Stopped') p.names[s.name] = (p.names[s.name] || 0) + h;
     }
+    for (const p of places) p.name = Object.keys(p.names).sort((x, y) => p.names[y] - p.names[x])[0] || '';
     const days = new Set(); for (const s of tl) if (inYear(s.t0)) days.add(new Date(s.t0).toDateString());
-    return { totalKm: total / 1000, byModeKm: byMode, visitCount: stays.length, uniquePlaces: Object.keys(places).length, topPlaces: Object.values(places).sort((a, b) => b.hours - a.hours).slice(0, 5), activeDays: days.size, longest };
+    return { totalKm: total / 1000, byModeKm: byMode, visitCount: stays.length, uniquePlaces: places.length, topPlaces: places.slice().sort((a, b) => b.hours - a.hours).slice(0, 5), activeDays: days.size, longest };
   }
 
   const api = { analyze, statsFromTimeline, CFG, labelMode };

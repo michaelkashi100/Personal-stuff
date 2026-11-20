@@ -14,3 +14,5 @@ The replay ignores GPS wobble (tiny moves around one spot are merged into the st
 
 ### How the data is understood
 `analyze.js` turns the raw fixes into stays and legs (see the header comment): noise-adaptive stay detection, a Viterbi pass over windowed speed statistics to tell walking, running, cycling, driving, transit and flights apart, and Google's own activity hints as a prior. `test/analyze-eval.js` measures it against simulated days with known ground truth (`node test/analyze-eval.js -v`).
+
+UI: one icon set (inline SVG, `ICON` in `app.js`), design tokens in `index.html`, screen wake lock while the app is open, and a finished day moves on to the next one. `test/ui-behavior.js` covers wake lock, day navigation, auto-advance, speed and the two-step forget.
