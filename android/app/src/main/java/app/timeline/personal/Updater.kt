@@ -29,7 +29,7 @@ object Updater {
     const val SITE = "https://michaelkashi100.github.io/Personal-stuff/"
     private const val RELEASE_API = "https://api.github.com/repos/michaelkashi100/Personal-stuff/releases/tags/android-latest"
     private const val APK_URL = "https://github.com/michaelkashi100/Personal-stuff/releases/download/android-latest/timeline.apk"
-    private const val CHECK_EVERY_MS = 6 * 3_600_000L
+    private const val CHECK_EVERY_MS = 2 * 60_000L   // one tiny request (bundle.json); a newer build shows up the next time you open the app
 
     @Volatile var checking = false
     @Volatile var installing = false
@@ -73,7 +73,7 @@ object Updater {
             try {
                 val web = WebBundle.update(a)
                 try { latestBuild = Bundle.parseBuild(JSONObject(getText(RELEASE_API, "application/vnd.github+json")).optString("name")) ?: latestBuild } catch (e: Exception) { /* offline: keep what we knew */ }
-                prefs(a).edit().putLong("last", System.currentTimeMillis()).apply()
+                if (web !is WebBundle.Outcome.Failed) prefs(a).edit().putLong("last", System.currentTimeMillis()).apply()   // a failed check is retried at the next open
                 when (web) {
                     is WebBundle.Outcome.Updated -> { message = "Updated the app's screens."; a.onWebUpdated() }
                     is WebBundle.Outcome.UpToDate -> if (force) message = if (latestBuild > installedBuild(a)) "A new version of the recorder is ready." else "Everything is up to date."
