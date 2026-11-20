@@ -4,34 +4,52 @@
   const DAY = 86400000;
   const COLORS = { walking: '#4ade80', 'on foot': '#4ade80', cycling: '#facc15', 'in passenger vehicle': '#f87171', driving: '#f87171', 'in train': '#a78bfa', 'in subway': '#a78bfa', flying: '#fb923c', path: '#38bdf8', unknown: '#94a3b8' };
 
+  // ---- Remember the file: a private copy kept in this browser's own storage on this device ----
+  const idb = () => new Promise((res, rej) => { const r = indexedDB.open('timeline', 1); r.onupgradeneeded = () => r.result.createObjectStore('files'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+  const tx = async (mode, fn) => { const db = await idb(); return new Promise((res, rej) => { const t = db.transaction('files', mode), q = fn(t.objectStore('files')); t.oncomplete = () => res(q && q.result); t.onerror = t.onabort = () => rej(t.error); }); };
+  const saveFiles = (list) => tx('readwrite', (st) => st.put(list, 'current')).catch(() => {});          // list: [{ name, blob }]
+  const loadFiles = () => tx('readonly', (st) => st.get('current')).catch(() => null);
+  const clearFiles = () => tx('readwrite', (st) => st.delete('current')).catch(() => {});
+
   // ---- Import ----
-  $('pick').onclick = () => $('file').click();
-  $('file').onchange = async (e) => {
-    const files = [...e.target.files];
-    if (!files.length) return;
-    const merged = { visits: [], trips: [], points: [] };
+  const fail = (msg) => { if (data) alert(msg); else { $('import').style.visibility = 'visible'; $('pick').style.display = ''; $('status').textContent = msg; } };
+  // sources: [{ name, text() }]. Parse everything first; only keep the copy once it parsed fine.
+  async function loadFromSources(sources, save) {
+    const merged = { visits: [], trips: [], points: [] }, keep = [];
     try {
-      for (const f of files) {
+      for (const f of sources) {
         $('status').textContent = 'Reading ' + f.name + '…';
-        const d = TL.parseTimeline(JSON.parse(await f.text()));
+        const text = await f.text();
+        const d = TL.parseTimeline(JSON.parse(text));
         // concat, not push(...arr): spreading a huge array overflows the call stack.
         merged.visits = merged.visits.concat(d.visits); merged.trips = merged.trips.concat(d.trips); merged.points = merged.points.concat(d.points);
+        if (save) keep.push({ name: f.name, blob: new Blob([text], { type: 'application/json' }) });
       }
     } catch (err) {
       // Show where it failed (first stack frames only; no file contents) to make problems diagnosable.
-      const where = String(err.stack || '').split('\n').slice(1, 3).map((s) => s.trim().replace(/^at /, '').slice(0, 80)).join(' | ');
-      $('status').textContent = 'Could not read file: ' + err.message + (where ? ' [' + where + ']' : '');
-      return;
+      const where = String(err.stack || '').split('\n').slice(1, 3).map((x) => x.trim().replace(/^at /, '').slice(0, 80)).join(' | ');
+      fail('Could not read file: ' + err.message + (where ? ' [' + where + ']' : ''));
+      return false;
     }
+    if (save) { await saveFiles(keep); if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {}); }
     start(merged);
+    return true;
+  }
+  $('pick').onclick = () => $('file').click();
+  $('file').onchange = (e) => {
+    const files = [...e.target.files];
+    e.target.value = '';                                     // allow picking the same file again later
+    if (files.length) loadFromSources(files.map((f) => ({ name: f.name, text: () => f.text() })), true);
   };
 
   function start(d) {
     d.visits.sort((a, b) => a.start - b.start); d.trips.sort((a, b) => a.start - b.start);
+    if (map) { stop(); map.remove(); map = null; }           // "Change file" while the app is open
     data = d;
     $('import').style.display = 'none';
     $('app').style.display = 'flex';
     initMap(); initDays(); renderStats();
+    document.querySelector('nav button').click();
   }
 
   // ---- Tabs ----
@@ -302,11 +320,24 @@
       card(s.uniquePlaces, `different places (${s.visitCount} visits)`) +
       (s.longest ? card((s.longest.dist / 1000).toFixed(1) + ' km', `longest single trip (${s.longest.type}, ${new Date(s.longest.start).toLocaleDateString()})`) : '') +
       `<div class="card"><div class="lbl">By activity</div><ul>${modes || '<li>none</li>'}</ul></div>` +
-      `<div class="card"><div class="lbl">Where you spent the most time</div><ul>${top || '<li>none</li>'}</ul></div>`;
+      `<div class="card"><div class="lbl">Where you spent the most time</div><ul>${top || '<li>none</li>'}</ul></div>` +
+      `<div class="card"><div class="lbl">Your data is saved only on this phone.</div><p style="margin:10px 0 0"><button class="btn2" id="chg">Change file</button> <button class="btn2" id="forget">Forget my data</button></p></div>`;
+    $('chg').onclick = () => $('file').click();
+    $('forget').onclick = async () => { await clearFiles(); location.reload(); };
   }
 
   // Self-updating: check for a new version on every open, and reload into it automatically
   // while still on the import screen (never mid-session, so loaded data isn't lost).
+  // Open the saved copy automatically; show the picker only when there is none (or it can't be read).
+  $('import').style.visibility = 'hidden';
+  loadFiles().then((saved) => {
+    if (saved && saved.length) {
+      $('import').style.visibility = 'visible'; $('pick').style.display = 'none'; $('status').textContent = 'Loading your saved timeline…';
+      return loadFromSources(saved.map((e) => ({ name: e.name, text: () => e.blob.text() })), false);
+    }
+    $('import').style.visibility = 'visible';
+  }).catch(() => { $('import').style.visibility = 'visible'; });
+
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     const hadController = !!navigator.serviceWorker.controller;
     navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !data) location.reload(); });
