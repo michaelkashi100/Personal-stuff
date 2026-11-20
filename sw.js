@@ -1,4 +1,4 @@
-const CACHE = 'timeline-v4';
+const CACHE = 'timeline-v5';
 const ASSETS = ['./', 'index.html', 'app.js', 'parser.js', 'manifest.json', 'lib/leaflet.js', 'lib/leaflet.css'];
 self.addEventListener('install', (e) => {
   self.skipWaiting();

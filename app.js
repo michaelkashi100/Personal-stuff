@@ -1,6 +1,6 @@
 (function () {
   const $ = (id) => document.getElementById(id);
-  let data = null, map, heat = [], dayLayer, marker, timer = null;
+  let data = null, map, dayLayer, marker, timer = null;
   const DAY = 86400000;
   const COLORS = { walking: '#4ade80', 'on foot': '#4ade80', cycling: '#facc15', 'in passenger vehicle': '#f87171', driving: '#f87171', 'in train': '#a78bfa', 'in subway': '#a78bfa', flying: '#fb923c', path: '#38bdf8', unknown: '#94a3b8' };
 
@@ -71,47 +71,139 @@
     if (sorted.length) showDay(sorted[sorted.length - 1]), ($('day').value = sorted[sorted.length - 1]);
   }
 
-  // Build timeline of [time, lat, lng] for the day.
-  let track = [];
-  function showDay(d) {
-    stop(); dayLayer.clearLayers(); track = [];
-    const end = d + DAY;
-    for (const t of data.trips) {
-      if (t.start < d || t.start >= end || t.path.length < 2) continue;
-      const color = COLORS[t.type] || COLORS.unknown;
-      L.polyline(t.path, { color, weight: 4, opacity: 0.85 }).addTo(dayLayer);
-      const n = t.path.length, dur = Math.max(1, t.end - t.start);
-      t.path.forEach((p, i) => track.push([t.start + (dur * i) / (n - 1), p[0], p[1]]));
-    }
-    for (const v of data.visits) {
-      if (v.start < d || v.start >= end) continue;
-      L.circleMarker([v.lat, v.lng], { radius: 8, color: '#fff', weight: 2, fillColor: '#f43f5e', fillOpacity: 1 })
-        .bindTooltip((v.name || v.type) + ' · ' + new Date(v.start).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })).addTo(dayLayer);
-      track.push([v.start, v.lat, v.lng]);
-    }
-    for (const p of data.points) if (p.t >= d && p.t < end) track.push([p.t, p.lat, p.lng]);
-    track.sort((a, b) => a[0] - b[0]);
-    marker = L.circleMarker([0, 0], { radius: 9, color: '#fff', weight: 3, fillColor: '#38bdf8', fillOpacity: 1 });
-    if (track.length) {
-      marker.setLatLng([track[0][1], track[0][2]]).addTo(dayLayer);
-      map.fitBounds(track.map((t) => [t[1], t[2]]), { padding: [40, 40], maxZoom: 16 });
-    }
-    $('scrub').value = 0; label(0);
+  // ---- Scenes: a day is an alternating list of moves and stays ----
+  // The replay axis ("v") counts movement time at real length, but every stay gets a short fixed slot,
+  // so hours of standing still don't dominate. The stay's real duration is shown, not waited for.
+  const MIN_STAY = 2 * 60000, MIN_GAP = 10 * 60000, STAY_V = 3 * 60000;
+  let scenes = { items: [], V: 0 }, lastLabel = '';
+
+  const fmtDur = (ms) => { const m = Math.round(ms / 60000), h = Math.floor(m / 60); return h ? h + ' h' + (m % 60 ? ' ' + (m % 60) + ' m' : '') : m + ' m'; };
+  const shortDur = (ms) => ms >= 3.6e6 ? (ms / 3.6e6).toFixed(1).replace(/\.0$/, '') + 'h' : Math.round(ms / 60000) + 'm';
+  const clock = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  function placeLabel(v) {
+    const n = v.name || '';
+    if (n && !/^[A-Za-z0-9_-]{20,}$/.test(n)) return n;           // skip opaque place IDs
+    const t = (v.type || '').toLowerCase().replace(/_/g, ' ');
+    return t && t !== 'unknown' && t !== 'place' ? t[0].toUpperCase() + t.slice(1) : 'Stopped';
   }
 
-  function label(frac) {
-    if (!track.length) { $('dayLabel').textContent = 'no data'; return; }
-    const t0 = track[0][0], t1 = track[track.length - 1][0];
-    $('dayLabel').textContent = new Date(t0 + (t1 - t0) * frac).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  function makeMove(path, t0, t1, type) {
+    const cum = [0];
+    for (let i = 1; i < path.length; i++) cum.push(cum[i - 1] + TL.haversine(path[i - 1], path[i]));
+    return { kind: 'move', t0, t1, type, path, cum, len: cum[cum.length - 1], vlen: Math.max(t1 - t0, 30000) };
   }
+
+  // Records.json has no visits: derive stays where the points stay within 150 m for 10+ minutes.
+  function scenesFromPoints(d, end, items) {
+    const pts = data.points.filter((p) => p.t >= d && p.t < end).sort((a, b) => a.t - b.t);
+    const ll = (p) => [p.lat, p.lng];
+    let run = [], i = 0;
+    const flush = () => { if (run.length > 1) items.push(makeMove(run.map(ll), run[0].t, run[run.length - 1].t, 'path')); run = []; };
+    while (i < pts.length) {
+      let j = i;
+      while (j + 1 < pts.length && TL.haversine(ll(pts[i]), ll(pts[j + 1])) < 150) j++;
+      if (pts[j].t - pts[i].t >= 10 * 60000) {
+        run.push(pts[i]); flush();
+        items.push({ kind: 'stay', t0: pts[i].t, t1: pts[j].t, lat: pts[i].lat, lng: pts[i].lng, name: 'Stopped' });
+        i = j + 1;
+      } else { run.push(pts[i]); i++; }
+    }
+    flush();
+  }
+
+  function buildScenes(d) {
+    const end = d + DAY, items = [];
+    const trips = data.trips.filter((t) => t.start >= d && t.start < end && t.path.length >= 2);
+    const paths = trips.filter((t) => t.type === 'path'), used = new Set();
+    for (const a of trips.filter((t) => t.type !== 'path')) {
+      const p = paths.find((q) => !used.has(q) && q.start < a.end && q.end > a.start);   // richer GPS geometry, if any
+      if (p) used.add(p);
+      items.push(makeMove(p ? p.path : a.path, a.start, a.end, a.type));
+    }
+    for (const p of paths) if (!used.has(p)) items.push(makeMove(p.path, p.start, p.end, 'path'));
+    for (const v of data.visits) {
+      const t0 = Math.max(v.start, d), t1 = Math.min(v.end, end);
+      if (t1 - t0 >= MIN_STAY) items.push({ kind: 'stay', t0, t1, lat: v.lat, lng: v.lng, name: placeLabel(v) });
+    }
+    if (!items.length) scenesFromPoints(d, end, items);
+    items.sort((a, b) => a.t0 - b.t0);
+    const out = [];
+    for (const it of items) {                       // an unexplained gap after a move is time spent where it ended
+      const prev = out[out.length - 1];
+      if (prev && prev.kind === 'move' && it.t0 - prev.t1 > MIN_GAP) {
+        const q = prev.path[prev.path.length - 1];
+        out.push({ kind: 'stay', t0: prev.t1, t1: it.t0, lat: q[0], lng: q[1], name: 'Stopped' });
+      }
+      out.push(it);
+    }
+    const moveV = out.reduce((a, s) => a + (s.kind === 'move' ? s.vlen : 0), 0), nStay = out.filter((s) => s.kind === 'stay').length;
+    // each stay gets ~10% of the movement time, but all stays together never exceed ~60% of it
+    const stayV = Math.max(STAY_V, Math.min(moveV * 0.1, (moveV * 0.6) / Math.max(1, nStay)));
+    let off = 0;
+    for (const s of out) { if (s.kind === 'stay') s.vlen = stayV; s.v0 = off; off += s.vlen; }
+    return { items: out, V: off };
+  }
+
+  function locate(v) {
+    let s = scenes.items[0];
+    for (const it of scenes.items) { if (it.v0 <= v) s = it; else break; }
+    const f = Math.min(1, Math.max(0, (v - s.v0) / s.vlen)), t = s.t0 + (s.t1 - s.t0) * f;
+    if (s.kind === 'stay') return { s, t, f, ll: [s.lat, s.lng] };
+    let ll = s.path[0];
+    if (s.len > 0) {
+      const target = s.len * f; let k = 1;
+      while (k < s.cum.length - 1 && s.cum[k] < target) k++;
+      const a = s.path[k - 1], b = s.path[k], u = (target - s.cum[k - 1]) / (s.cum[k] - s.cum[k - 1] || 1);
+      ll = [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u];
+    }
+    return { s, t, f, ll };
+  }
+
+  function showDay(d) {
+    stop(); dayLayer.clearLayers(); lastLabel = '';
+    scenes = buildScenes(d);
+    const items = scenes.items, bounds = [];
+    let moving = 0, still = 0;
+    for (const s of items) {
+      if (s.kind === 'move') {
+        moving += s.t1 - s.t0;
+        L.polyline(s.path, { color: COLORS[s.type] || COLORS.unknown, weight: 4, opacity: 0.85 }).addTo(dayLayer);
+        s.path.forEach((p) => bounds.push(p));
+      } else {
+        still += s.t1 - s.t0; bounds.push([s.lat, s.lng]);
+        const r = Math.min(18, 7 + 3 * Math.sqrt((s.t1 - s.t0) / 3.6e6));            // bigger circle = longer stay
+        L.circleMarker([s.lat, s.lng], { radius: r, color: '#fff', weight: 2, fillColor: '#f43f5e', fillOpacity: 0.55 })
+          .bindTooltip(s.name + ' · ' + clock(s.t0) + '–' + clock(s.t1) + ' (' + fmtDur(s.t1 - s.t0) + ')').addTo(dayLayer);
+      }
+    }
+    marker = L.marker([0, 0], { icon: L.divIcon({ className: 'live', html: '<div class="ring"></div><div class="core"></div>', iconSize: [24, 24] }), interactive: false, keyboard: false })
+      .bindTooltip('', { permanent: true, direction: 'top', offset: [0, -14], className: 'livetip' }).addTo(dayLayer);
+    if (bounds.length) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 16 });
+    renderBar(items, moving, still);
+    $('scrub').value = 0; seek(0);
+  }
+
+  // Timeline bar: coloured blocks = movement, hatched blocks = time spent still (with its duration).
+  function renderBar(items, moving, still) {
+    const V = scenes.V || 1, px = $('bar').clientWidth || 340;
+    $('bar').innerHTML = items.map((s) => {
+      const left = (s.v0 / V) * 100, w = (s.vlen / V) * 100;
+      return s.kind === 'move'
+        ? `<div class="seg" style="left:${left}%;width:${w}%;background:${COLORS[s.type] || COLORS.unknown}"></div>`
+        : `<div class="seg still" style="left:${left}%;width:${w}%">${(s.vlen / V) * px >= 24 ? '<span>' + shortDur(s.t1 - s.t0) + '</span>' : ''}</div>`;
+    }).join('');
+    $('summary').textContent = items.length ? 'moving ' + fmtDur(moving) + ' · still ' + fmtDur(still) : '';
+  }
+
   function seek(frac) {
-    if (!track.length) return;
-    const t0 = track[0][0], t1 = track[track.length - 1][0], t = t0 + (t1 - t0) * frac;
-    let i = 0; while (i < track.length - 1 && track[i + 1][0] <= t) i++;
-    const a = track[i], b = track[Math.min(i + 1, track.length - 1)];
-    const k = b[0] > a[0] ? (t - a[0]) / (b[0] - a[0]) : 0;
-    marker.setLatLng([a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k]);
-    label(frac);
+    $('fill').style.width = frac * 100 + '%'; $('playhead').style.left = frac * 100 + '%';
+    if (!scenes.items.length) { $('dayLabel').textContent = 'no data'; return; }
+    const { s, t, f, ll } = locate(frac * scenes.V);
+    marker.setLatLng(ll);
+    const el = marker.getElement(); if (el) el.classList.toggle('stay', s.kind === 'stay');
+    $('dayLabel').textContent = clock(t);
+    const text = s.kind === 'stay' ? s.name + ' · ' + fmtDur((s.t1 - s.t0) * f) : clock(t);
+    if (text !== lastLabel) { lastLabel = text; marker.setTooltipContent(text); }
   }
   $('scrub').oninput = () => seek($('scrub').value / 1000);
   function stop() { if (timer) clearInterval(timer); timer = null; $('play').textContent = '▶ Play'; }
