@@ -67,9 +67,15 @@
     data.trips.forEach((t) => days.add(dayKey(t.start)));
     data.points.forEach((p) => days.add(dayKey(p.t)));
     const sorted = [...days].filter((d) => !isNaN(d)).sort((a, b) => a - b);
-    $('day').innerHTML = sorted.map((d) => `<option value="${d}">${new Date(d).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}</option>`).join('');
+    const cnt = new Map();                                   // trips per day (GPS 'path' pieces only if there is nothing else)
+    for (const t of data.trips) { const k = dayKey(t.start), c = cnt.get(k) || { a: 0, p: 0 }; if (t.type === 'path') c.p++; else c.a++; cnt.set(k, c); }
+    const trips = (d) => { const c = cnt.get(d); return c ? c.a || c.p : 0; };
+    const stopsBy = new Map(); for (const v of data.visits) stopsBy.set(dayKey(v.start), (stopsBy.get(dayKey(v.start)) || 0) + 1);
+    const stops = (d) => stopsBy.get(d) || 0;
+    $('day').innerHTML = sorted.map((d) => `<option value="${d}">${new Date(d).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}${trips(d) ? ' · ' + trips(d) + ' trip' + (trips(d) > 1 ? 's' : '') : stops(d) > 1 ? ' · ' + stops(d) + ' stops' : ''}</option>`).join('');
     $('day').onchange = () => showDay(+$('day').value);
-    if (sorted.length) showDay(sorted[sorted.length - 1]), ($('day').value = sorted[sorted.length - 1]);
+    const pick = [...sorted].reverse().find((d) => trips(d) > 0 || stops(d) > 1) ?? sorted[sorted.length - 1];   // latest day with movement
+    if (pick != null) showDay(pick), ($('day').value = pick);
   }
 
   // ---- Scenes: a day is an alternating list of moves and stays ----
@@ -150,11 +156,14 @@
     if (!items.length) scenesFromPoints(d, end, items);
     items.sort((a, b) => a.t0 - b.t0);
     const out = [];
-    for (const it of items) {                       // an unexplained gap after a move is time spent where it ended
+    for (const it of items) {
       const prev = out[out.length - 1];
-      if (prev && prev.kind === 'move' && it.t0 - prev.t1 > MIN_GAP) {
+      if (prev && prev.kind === 'stay' && it.kind === 'stay' && TL.haversine([prev.lat, prev.lng], [it.lat, it.lng]) > 100) {
+        // arrived somewhere, then somewhere else, with no recorded trip between: draw the leg between them
+        out.push(makeMove([[prev.lat, prev.lng], [it.lat, it.lng]], prev.t1, Math.max(prev.t1, it.t0), 'unknown'));
+      } else if (prev && prev.kind === 'move' && it.t0 - prev.t1 > MIN_GAP) {   // unexplained gap after a move = time spent where it ended
         const q = prev.path[prev.path.length - 1];
-        out.push({ kind: 'stay', t0: prev.t1, t1: it.t0, lat: q[0], lng: q[1], name: 'Stopped' });
+        if (it.kind === 'move' || TL.haversine(q, [it.lat, it.lng]) > 150) out.push({ kind: 'stay', t0: prev.t1, t1: it.t0, lat: q[0], lng: q[1], name: 'Stopped' });
       }
       out.push(it);
     }
@@ -173,17 +182,25 @@
     return { s, f: f0, p, t: s.t0 + (s.t1 - s.t0) * p, ll: cur.ll, k: cur.k, bear };
   }
 
-  // Camera: zoomed in by default; during a move, ease out until the whole trip fits, hold, then ease back in.
-  // The same easing drives the car's speed, so it is slow while the camera moves and fast while it is wide.
+  // Camera: zoomed in on the car by default; during a move the view grows from "street level around the car"
+  // to "the whole trip", holds, then shrinks back. Interpolating the view *box* (not zoom and centre separately)
+  // guarantees the car is always inside the frame. The same easing drives the car's speed.
   function cameraFor(s, p, carLL) {
     if (s.kind === 'stay') return { center: [s.lat, s.lng], zoom: Z_IN };
-    if (s.zfit === undefined) { const z = map.getBoundsZoom(s.bounds, false, L.point(70, 90)); s.zfit = isFinite(z) ? Math.max(2, z) : Z_IN; }
-    const w = win(0, 0.2, p) * (1 - win(0.8, 1, p));
-    const zfit = Math.min(Z_IN, s.zfit), k = Math.min(1, Math.max(0, (Z_IN - s.zfit) / 0.7)), c = s.bounds.getCenter(), m = w * k;
-    return { center: [carLL[0] + (c.lat - carLL[0]) * m, carLL[1] + (c.lng - carLL[1]) * m], zoom: Z_IN + (zfit - Z_IN) * w };
+    const size = map.getSize(), sx = Math.max(50, size.x - 70), sy = Math.max(50, size.y - 90);
+    if (!s.tb) {                                    // trip box in pixels at street zoom
+      const a = map.project(s.bounds.getSouthWest(), Z_IN), b = map.project(s.bounds.getNorthEast(), Z_IN);
+      s.tb = { x0: Math.min(a.x, b.x), x1: Math.max(a.x, b.x), y0: Math.min(a.y, b.y), y1: Math.max(a.y, b.y) };
+    }
+    const c = map.project(carLL, Z_IN), w = win(0, 0.2, p) * (1 - win(0.8, 1, p)), lerp = (a, b) => a + (b - a) * w;
+    const x0 = lerp(c.x - sx / 2, Math.min(c.x - sx / 2, s.tb.x0)), x1 = lerp(c.x + sx / 2, Math.max(c.x + sx / 2, s.tb.x1));
+    const y0 = lerp(c.y - sy / 2, Math.min(c.y - sy / 2, s.tb.y0)), y1 = lerp(c.y + sy / 2, Math.max(c.y + sy / 2, s.tb.y1));
+    const zoom = Math.max(2, Z_IN - Math.log2(Math.max((x1 - x0) / sx, (y1 - y0) / sy)));
+    const ctr = map.unproject(L.point((x0 + x1) / 2, (y0 + y1) / 2), Z_IN);
+    return { center: [ctr.lat, ctr.lng], zoom };
   }
 
-  const CAR = '<div class="ring"></div><div class="carwrap"><svg viewBox="0 0 24 44" width="24" height="44">' +
+  const CAR = '<div class="ring"></div><div class="carwrap"><svg viewBox="0 0 24 44" width="30" height="55">' +
     '<rect x="0.5" y="8" width="3" height="9" rx="1.5" fill="#0b1220"/><rect x="20.5" y="8" width="3" height="9" rx="1.5" fill="#0b1220"/>' +
     '<rect x="0.5" y="27" width="3" height="9" rx="1.5" fill="#0b1220"/><rect x="20.5" y="27" width="3" height="9" rx="1.5" fill="#0b1220"/>' +
     '<rect x="3" y="2" width="18" height="40" rx="8" fill="#38bdf8" stroke="#fff" stroke-width="2"/>' +
@@ -191,7 +208,7 @@
     '<rect x="5.5" y="3.5" width="3.5" height="2" rx="1" fill="#fde68a"/><rect x="15" y="3.5" width="3.5" height="2" rx="1" fill="#fde68a"/></svg></div>';
 
   function showDay(d) {
-    stop(); dayLayer.clearLayers(); hudKey = ''; trailColor = ''; heading = 0;
+    stop(); map.invalidateSize(); dayLayer.clearLayers(); hudKey = ''; trailColor = ''; heading = 0;
     scenes = buildScenes(d);
     const items = scenes.items;
     let moving = 0, still = 0;
@@ -208,7 +225,7 @@
     }
     trailGlow = L.polyline([], { weight: 13, opacity: 0.22, lineCap: 'round', interactive: false }).addTo(dayLayer);
     trail = L.polyline([], { weight: 5, opacity: 1, lineCap: 'round', interactive: false }).addTo(dayLayer);
-    marker = L.marker([0, 0], { icon: L.divIcon({ className: 'live', html: CAR, iconSize: [24, 24] }), interactive: false, keyboard: false, zIndexOffset: 1000 }).addTo(dayLayer);
+    marker = L.marker([0, 0], { icon: L.divIcon({ className: 'live', html: CAR, iconSize: [30, 30] }), interactive: false, keyboard: false, zIndexOffset: 1000 }).addTo(dayLayer);
     carEl = marker.getElement().querySelector('.carwrap');
     renderBar(items, moving, still);
     $('scrub').value = 0; seek(0);
@@ -226,7 +243,8 @@
     $('summary').textContent = items.length ? 'moving ' + fmtDur(moving) + ' · still ' + fmtDur(still) : '';
   }
 
-  function seek(fr) {
+  function seek(fr) { try { seekInner(fr); } catch (e) { console.error(e); setHud('Replay error', String(e.message).slice(0, 60)); } }
+  function seekInner(fr) {
     frac = fr;
     $('fill').style.width = fr * 100 + '%'; $('playhead').style.left = fr * 100 + '%';
     if (!scenes.items.length) { setHud('--:--', 'no data for this day'); return; }
