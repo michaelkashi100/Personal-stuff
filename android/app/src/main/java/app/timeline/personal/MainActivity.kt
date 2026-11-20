@@ -89,6 +89,12 @@ class MainActivity : ComponentActivity() {
         }
         loader = buildLoader()
         setContentView(web)
+        // Back: let the page close its sheet / leave the replay first; only when it has nothing to close does the app go to the background.
+        onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                web.evaluateJavascript("(window.__tlBack&&window.__tlBack())===true") { r -> if (r != "true") { isEnabled = false; onBackPressedDispatcher.onBackPressed(); isEnabled = true } }
+            }
+        })
         web.loadUrl("https://${WebViewAssetLoader.DEFAULT_DOMAIN}/assets/www/index.html")
     }
 

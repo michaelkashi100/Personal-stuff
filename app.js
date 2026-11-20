@@ -183,13 +183,17 @@
     $('mapView').style.display = b.dataset.v === 'map' ? 'block' : 'none';
     $('statsView').style.display = b.dataset.v === 'stats' ? 'block' : 'none';
     syncLoc();
-    if (b.dataset.v === 'map') { map.invalidateSize(); if (scenes.items.length) seek(frac); }   // re-frame the camera: it was sized while hidden
+    if (b.dataset.v === 'map') { map.invalidateSize(); if (scenes.items.length) seek(frac); if (live) { setFollow(true); flyMe(); } }   // re-frame the camera: it was sized while hidden
   }));
 
   // ---- Map & replay ----
   function initMap() {
     map = L.map('map', { zoomControl: false, zoomSnap: 0 });
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
+    // Always something to look at: a coarse, stretched layer sits under the sharp one, so a tile that is still loading (or failed)
+    // shows the blurry map instead of black. The sharp layer loads while moving, keeps a wide margin and retries failed tiles.
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, maxNativeZoom: 12, zIndex: 1, keepBuffer: 4, updateWhenIdle: true }).addTo(map);
+    const sharp = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap', zIndex: 2, updateWhenIdle: false, updateInterval: 100, keepBuffer: 8 }).addTo(map);
+    sharp.on('tileerror', (e) => { const t = e.tile; if (t && !t.__retry) { t.__retry = 1; const u = t.src; setTimeout(() => { t.src = u + (u.includes('?') ? '&' : '?') + 'r=1'; }, 1500); } });
     dayLayer = L.layerGroup().addTo(map);
     // Background: the cleaned places and routes (not the raw, noisy fixes), drawn on a canvas and capped at ~3k points.
     const all = [];
@@ -205,15 +209,33 @@
     initMe();
   }
 
-  // ---- Your current location (blue dot, like Google Maps) ----
-  let me = null, meDot = null, meAcc = null, meWatch = null, meCentered = false, meTouched = false, meDenied = false;
+  // ---- Live location (blue dot, like Google Maps) ----
+  // "Live" is the default state: the map follows you. Pressing play, scrubbing or choosing a day switches to replay;
+  // the locate button comes back. Dragging or pinching the map pauses following and it resumes by itself after 20 s.
+  let me = null, meDot = null, meAcc = null, meWatch = null, meDenied = false;
+  let live = true, follow = true, resumeT = 0, progUntil = 0, followZoom = 17, liveTimer = 0;
   function initMe() {
-    meDot = meAcc = null; meCentered = false; meTouched = false;
-    map.on('dragstart zoomstart', (e) => { if (!e.hard && !meProgrammatic) meTouched = true; });
+    meDot = meAcc = null;
+    map.on('dragstart zoomstart', userMoved);
+    map.on('zoomend', () => { if (live && Date.now() > progUntil) followZoom = map.getZoom(); });
     if (me) drawMe();
     syncLoc();
+    clearInterval(liveTimer); liveTimer = setInterval(() => { if (live && data) renderLive(); }, 15000);
+    setFollow(follow);
+    if (live) renderLive();
   }
-  let meProgrammatic = false;
+  function userMoved() {
+    if (!live || Date.now() < progUntil) return;
+    setFollow(false);
+    clearTimeout(resumeT);
+    resumeT = setTimeout(() => { if (live && !playing && !document.hidden) { setFollow(true); flyMe(); } }, 20000);
+  }
+  function setFollow(on) {
+    follow = on;
+    const b = $('locate'), act = on && live;
+    b.classList.toggle('on', act); b.setAttribute('aria-pressed', String(act));
+    b.setAttribute('aria-label', act ? 'Following your location' : 'Show my location');
+  }
   function drawMe() {
     if (!map || !me) return;
     const ll = [me.lat, me.lng];
@@ -221,13 +243,37 @@
       meAcc = L.circle(ll, { radius: me.acc, stroke: false, fillColor: '#3b82f6', fillOpacity: 0.14, interactive: false }).addTo(map);
       meDot = L.marker(ll, { icon: L.divIcon({ className: 'me', html: '<i class="mepulse"></i><i class="medot"></i>', iconSize: [22, 22] }), interactive: false, keyboard: false, zIndexOffset: 500 }).addTo(map);
     } else { meDot.setLatLng(ll); meAcc.setLatLng(ll); meAcc.setRadius(me.acc); }
-    if (!meCentered && !meTouched && !playing) { meCentered = true; flyMe(); }
+    if (live && follow) flyMe();
+    if (live) renderLive();
   }
+  // Centre on you (keeps the zoom you chose, street level by default). Every move is ours, so it must not count as a drag.
   function flyMe() {
-    if (!map || !me) return;
-    meProgrammatic = true;
-    map.setView([me.lat, me.lng], Math.max(map.getZoom(), 16), { animate: true });
-    setTimeout(() => { meProgrammatic = false; }, 700);
+    if (!map || !me || !live) return;
+    progUntil = Date.now() + 1000;
+    map.invalidateSize();
+    map.setView([me.lat, me.lng], Math.min(19, Math.max(14, followZoom)), { animate: true, duration: 0.7 });
+  }
+  const nearPlace = () => { if (!me) return null; let best = null, bd = 120; for (const p of places) { const d = TL.haversine([me.lat, me.lng], [p.lat, p.lng]); if (d < bd) { bd = d; best = p; } } return best; };
+  function renderLive() {
+    if (!live) return;
+    const np = nearPlace();
+    $('hudDay').textContent = 'Now';
+    updateHudEdit(np ? { kind: 'stay', place: np } : { kind: 'move' });
+    const nm = np ? (placeLabelText(np) || 'Unnamed place') : '';
+    setHud(clock(Date.now()), !me ? (meDenied ? 'Location is off' : 'Finding you…') : nm ? 'You are at ' + nm : 'You are here', 'pin', '#3b82f6', me && np ? [np.lat, np.lng] : null);
+  }
+  function goLive() {
+    stop(); live = true; hudKey = ''; setFollow(true);
+    if (marker) { const el = marker.getElement(); if (el) el.style.visibility = 'hidden'; }
+    if (curDay != null) $('hudDay').textContent = 'Now';
+    if (me) flyMe(); else { meDenied = false; syncLoc(); toast('Finding your location…', 2500); }
+    renderLive();
+  }
+  function leaveLive() {
+    if (!live) return;
+    live = false; clearTimeout(resumeT); setFollow(false); hudKey = '';
+    if (marker) { const el = marker.getElement(); if (el) el.style.visibility = ''; }
+    if (curDay != null) $('hudDay').textContent = dayLabel(curDay, { weekday: 'short', day: 'numeric', month: 'short' });
   }
   function syncLoc() {
     const want = !!(map && navigator.geolocation && document.visibilityState === 'visible' && !document.body.classList.contains('on-stats'));
@@ -239,18 +285,18 @@
         me = { lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.max(p.coords.accuracy || 30, 8) };
         drawMe();
       }, (err) => {
-        if (meWatch != null) { navigator.geolocation.clearWatch(meWatch); meWatch = null; }
-        if (err && err.code === 1 && !meDenied) { meDenied = true; toast('Allow location to see where you are on the map.', 5000); }
+        if (err && err.code === 1) {                             // denied: stop and say so
+          if (meWatch != null) { navigator.geolocation.clearWatch(meWatch); meWatch = null; }
+          if (!meDenied) { meDenied = true; toast('Allow location to see where you are on the map.', 5000); if (live) renderLive(); }
+        } else if (meWatch != null) {                            // a temporary gap (no signal, timeout): start a fresh watch shortly
+          navigator.geolocation.clearWatch(meWatch); meWatch = null;
+          setTimeout(syncLoc, 1000);
+        }
       }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 });
     } catch (e) { meWatch = null; }
   }
-  document.addEventListener('visibilitychange', syncLoc);
-  $('locate').onclick = () => {
-    buzz();
-    if (!me) { meDenied = false; syncLoc(); toast('Finding your location…', 3000); return; }
-    if (playing) stop();
-    meTouched = false; flyMe();
-  };
+  document.addEventListener('visibilitychange', () => { syncLoc(); if (document.visibilityState === 'visible' && live) { setFollow(true); flyMe(); } });
+  $('locate').onclick = () => { buzz(); goLive(); };
 
   const dayKey = (t) => { const d = new Date(t); return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime(); };
   let dayList = [], dayTrips = new Map(), curDay = null, speed = 1, autoNext = true, keepOn = true, wake = null;
@@ -277,7 +323,7 @@
     dayTrips = trips;
     const multiYear = new Set(dayList.map((d) => new Date(d).getFullYear())).size > 1, optLabel = (d) => dayLabel(d, multiYear ? undefined : { weekday: 'short', day: 'numeric', month: 'short' });
     $('day').innerHTML = dayList.map((d) => `<option value="${d}">${optLabel(d)}${nTrips(d) ? ' · ' + nTrips(d) + (nTrips(d) > 1 ? ' trips' : ' trip') : ''}</option>`).join('');
-    $('day').onchange = () => { const was = playing; showDay(+$('day').value); if (was) startPlay(); };
+    $('day').onchange = () => { leaveLive(); const was = playing; showDay(+$('day').value); if (was) startPlay(); };
     let was = NaN; try { was = Number(sessionStorage.getItem('tl-day')); } catch (e) {}
     if (dayList.length) showDay(dayList.includes(was) ? was : dayList[dayList.length - 1]);
   }
@@ -295,8 +341,8 @@
     el.querySelector('span').textContent = n ? n + (n > 1 ? ' trips' : ' trip') + ' · ' + dayLabel(d, { year: 'numeric' }) : dayLabel(d, { year: 'numeric' });
     el.classList.remove('show'); void el.offsetWidth; el.classList.add('show');
   }
-  $('prevDay').onclick = () => { buzz(); const was = playing; goDay(-1, was); };
-  $('nextDay').onclick = () => { buzz(); const was = playing; goDay(1, was); };
+  $('prevDay').onclick = () => { buzz(); leaveLive(); const was = playing; goDay(-1, was); };
+  $('nextDay').onclick = () => { buzz(); leaveLive(); const was = playing; goDay(1, was); };
   $('speedSeg').querySelectorAll('button').forEach((b) => (b.onclick = () => {
     speed = +b.dataset.speed; buzz();
     $('speedSeg').querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
@@ -321,7 +367,7 @@
   // The replay runs on its own "animation clock" (ms): a trip takes 4.5-14 s depending on distance, a stay is a ~2 s
   // fast-forward of the real clock. Everything on screen is a pure function of that clock.
   const MIN_STAY = 2 * 60000, STAY_MS = 2200, Z_IN = 17;
-  let scenes = { items: [], V: 0 }, frac = 0, heading = 0, playing = false, lastTs = 0, raf = 0;
+  let zoomBias = 0, scenes = { items: [], V: 0 }, frac = 0, heading = 0, playing = false, lastTs = 0, raf = 0;
   let trail, trailGlow, trailColor = '', carEl, badgeEl, badgeMode = '', hudKey = '', litKey = null;
 
   const sm = (x) => x * x * (3 - 2 * x);                                  // smoothstep
@@ -331,7 +377,7 @@
   const fmtDur = (ms) => { const m = Math.round(ms / 60000), h = Math.floor(m / 60); return h ? h + ' h' + (m % 60 ? ' ' + (m % 60) + ' m' : '') : m + ' m'; };
   const shortDur = (ms) => ms >= 3.6e6 ? (ms / 3.6e6).toFixed(1).replace(/\.0$/, '') + 'h' : Math.round(ms / 60000) + 'm';
   const fmtDist = (d) => (d >= 1000 ? (d / 1000).toFixed(1) + ' km' : Math.round(d) + ' m');
-  const clock = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const clock = (t) => { const d = new Date(t); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };   // always 24-hour
   function bearing(a, b) {
     const dy = b[0] - a[0], dx = (b[1] - a[1]) * Math.cos(((a[0] + b[0]) * Math.PI) / 360);
     return dx === 0 && dy === 0 ? null : ((Math.atan2(dx, dy) * 180) / Math.PI + 360) % 360;
@@ -430,7 +476,7 @@
     stop(); map.invalidateSize(); dayLayer.clearLayers(); hudKey = ''; trailColor = ''; heading = 0; badgeMode = ''; litKey = null; curDay = d; hudPlace = null;
     try { sessionStorage.setItem('tl-day', String(d)); } catch (e) {}
     $('day').value = String(d);
-    $('hudDay').textContent = dayLabel(d, { weekday: 'short', day: 'numeric', month: 'short' });
+    $('hudDay').textContent = live ? 'Now' : dayLabel(d, { weekday: 'short', day: 'numeric', month: 'short' });
     const idx = dayList.indexOf(d); $('prevDay').disabled = idx <= 0; $('nextDay').disabled = idx < 0 || idx >= dayList.length - 1;
     scenes = buildScenes(d);
     const items = scenes.items, byMode = {};
@@ -449,6 +495,7 @@
     trailGlow = L.polyline([], { weight: 13, opacity: 0.22, lineCap: 'round', interactive: false }).addTo(dayLayer);
     trail = L.polyline([], { weight: 5, opacity: 1, lineCap: 'round', interactive: false }).addTo(dayLayer);
     marker = L.marker([0, 0], { icon: L.divIcon({ className: 'live', html: CAR, iconSize: [30, 30] }), interactive: false, keyboard: false, zIndexOffset: 1000 }).addTo(dayLayer);
+    if (live) marker.getElement().style.visibility = 'hidden';
     carEl = marker.getElement().querySelector('.carwrap'); badgeEl = marker.getElement().querySelector('.badge');
     renderBar(items, byMode, still);
     $('scrub').value = 0; seek(0);
@@ -472,10 +519,13 @@
   function seekInner(fr) {
     frac = fr;
     $('fill').style.width = fr * 100 + '%'; $('playhead').style.left = fr * 100 + '%';
+    if (live) { renderLive(); return; }                         // live: the map belongs to you, the replay is only a day picker
     if (!scenes.items.length) { setHud('--:--', 'No trips on this day'); return; }
     const { s, f, p, t, ll, k, bear, left } = locate(fr * scenes.V);
     const cam = cameraFor(s, p, ll);
-    map.setView(cam.center, cam.zoom, { animate: false });
+    // pinch while playing = zoom bias; zooming in is only applied while parked (on a trip the car must stay in frame)
+    const z = Math.max(2, Math.min(19, cam.zoom + (s.kind === 'stay' ? zoomBias : Math.min(0, zoomBias))));
+    map.setView(cam.center, z, { animate: false });
     marker.setLatLng(ll);
     // Routes of the current trip light up as they are driven; the progressive trail follows the current leg.
     const grp = s.kind === 'move' ? s.group : s.prev && s.prev.kind === 'move' ? s.prev.group : null, key = (grp ? scenes.items.indexOf(grp.legs[0]) : -1) + ':' + (s.kind === 'move' ? scenes.items.indexOf(s) : 'x');
@@ -496,9 +546,12 @@
     updateHudEdit(s);
     const sub = s.kind === 'stay' ? s.name + ' · ' + fmtDur((s.t1 - s.t0) * f)
       : s.uncertain ? 'Travelled · no data in between' : MODE_NAME[mode] + ' · ' + Math.round(s.med * 3.6) + ' km/h · ' + (left / 1000).toFixed(1) + ' km left';
-    setHud(clock(t), sub, s.kind === 'stay' ? 'pin' : MODE_ICON[mode], s.kind === 'stay' ? 'var(--accent)' : MODE_COLOR[mode]);
+    setHud(clock(t), sub, s.kind === 'stay' ? 'pin' : MODE_ICON[mode], s.kind === 'stay' ? 'var(--accent)' : MODE_COLOR[mode], s.kind === 'stay' ? [s.lat, s.lng] : null);
   }
-  function setHud(a, b, icon, color) {
+  let thumbKey = '';
+  function setHud(a, b, icon, color, thumb) {
+    const tk = thumb ? thumb[0].toFixed(5) + ',' + thumb[1].toFixed(5) : '';
+    if (tk !== thumbKey) { thumbKey = tk; const el = $('hudThumb'); el.innerHTML = thumb ? placeThumb(thumb[0], thumb[1], 150, 64) : ''; el.hidden = !thumb; }
     const key = a + '|' + b + '|' + (icon || '');
     if (key === hudKey) return;
     hudKey = key; $('hudTime').textContent = a; $('hudSub').textContent = b;
@@ -506,11 +559,11 @@
   }
 
   // ---- Playback ----
-  $('scrub').oninput = () => seek($('scrub').value / 100000);
+  $('scrub').oninput = () => { leaveLive(); seek($('scrub').value / 100000); };
   function setPlayUi() { const b = $('play'); b.innerHTML = svg(playing ? 'pause' : 'play', 'fill'); b.setAttribute('aria-label', playing ? 'Pause' : 'Play'); }
   // While the replay plays the camera is driven by the animation, so the map ignores touches and the replay keeps going.
   // Pause it and the map is free to pan and zoom again.
-  function lockMap(on) { if (!map) return; for (const h of ['dragging', 'touchZoom', 'doubleClickZoom', 'scrollWheelZoom', 'boxZoom', 'keyboard', 'tapHold']) if (map[h]) map[h][on ? 'disable' : 'enable'](); }
+  function lockMap(on) { $('map').classList.toggle('locked', on); if (!map) return; for (const h of ['dragging', 'touchZoom', 'doubleClickZoom', 'scrollWheelZoom', 'boxZoom', 'keyboard', 'tapHold']) if (map[h]) map[h][on ? 'disable' : 'enable'](); }
   function stop() { playing = false; cancelAnimationFrame(raf); setPlayUi(); lockMap(false); }
   function startPlay() {
     if (!scenes.items.length) return;
@@ -531,17 +584,105 @@
   $('play').onclick = () => {
     buzz();
     if (playing) return stop();
+    if (!scenes.items.length) return;
+    leaveLive();
     if (frac >= 1 && goDay(1, true)) return;                  // pressing play on a finished day continues with the next one
     if (frac >= 1) frac = 0;
     startPlay();
   };
-  window.__tl = () => { const el = marker && marker.getElement(), cur = scenes.items.length ? locate(frac * scenes.V).s : null; return { zoom: map.getZoom(), heading, frac, V: scenes.V, items: scenes.items.map((s) => (s.kind === 'move' ? s.mode : 'stay')), cur: cur ? (cur.kind === 'move' ? cur.mode : 'stay') : null, car: !!(el && el.classList.contains('drive')), timeline: timeline.length, day: curDay, playing, dragging: !!(map && map.dragging.enabled()) }; };   // test hook (read-only)
+
+  // ---- Gestures (what a swipe, pinch or tap does depends on the state) ----
+  //  Live (following you)      : the map is yours: drag / pinch / double-tap as usual. Dragging pauses following (it resumes after 20 s or via the locate button).
+  //  Replay playing (map locked): tap = pause, double-tap = reset zoom, pinch = zoom out/in, swipe left/right = next/previous day, swipe up/down = faster/slower.
+  //  Replay paused             : the map is free again (drag, pinch, double-tap).
+  //  Bottom panel              : swipe left/right = next/previous day.   Top bar: swipe left/right = Insights / Replay.
+  //  Insights                  : swipe right = back to Replay.           Question sheet: swipe down = "Not now".
+  const SPEEDS = [1, 2, 4];
+  function setSpeed(i) {
+    i = Math.max(0, Math.min(SPEEDS.length - 1, i)); const cur = SPEEDS.indexOf(speed);
+    if (i === cur) { toast(i ? 'Fastest speed' : 'Slowest speed', 1200); return; }
+    $('speedSeg').querySelectorAll('button')[i].click(); toast(SPEEDS[i] + '× speed', 1200);
+  }
+  function swipeDay(delta) {
+    if (!dayList.length) return;
+    const i = dayList.indexOf(curDay) + delta;
+    if (i < 0 || i >= dayList.length) { toast(delta > 0 ? 'That is the last day.' : 'That is the first day.', 1600); return; }
+    buzz(); leaveLive(); goDay(delta, playing);
+  }
+  function swipeOn(el, h, ok) {
+    let x0 = 0, y0 = 0, t0 = 0, on = false;
+    el.addEventListener('touchstart', (e) => { on = e.touches.length === 1 && (!ok || ok(e)); if (on) { x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; t0 = Date.now(); } }, { passive: true });
+    el.addEventListener('touchend', (e) => {
+      if (!on) return; on = false;
+      const t = e.changedTouches[0], dx = t.clientX - x0, dy = t.clientY - y0;
+      if (Date.now() - t0 > 700) return;
+      if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.8) (dx < 0 ? h.left : h.right) && (dx < 0 ? h.left : h.right)();
+      else if (Math.abs(dy) > 70 && Math.abs(dy) > Math.abs(dx) * 1.8) (dy < 0 ? h.up : h.down) && (dy < 0 ? h.up : h.down)();
+    }, { passive: true });
+    el.addEventListener('touchcancel', () => { on = false; }, { passive: true });
+  }
+  const notControl = (e) => !e.target.closest('#barwrap,select,.speed,button,input');
+  const showTab = (v) => { const b = document.querySelector('nav button[data-v=' + v + ']'); if (b && !b.classList.contains('on')) b.click(); };
+  swipeOn($('controls'), { left: () => swipeDay(1), right: () => swipeDay(-1) }, notControl);
+  swipeOn($('topbar'), { left: () => showTab('stats'), right: () => showTab('map') });
+  swipeOn($('statsView'), { right: () => showTab('map') }, (e) => !e.target.closest('input,select,[role=switch]'));
+  swipeOn($('ask'), { down: () => { const b = $('askLater'); if (b && $('ask').querySelector('.card').scrollTop < 4) b.click(); } }, (e) => !e.target.closest('input'));
+
+  (function mapGestures() {
+    const el = $('map'), dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+    let x0 = 0, y0 = 0, t0 = 0, pinch = null, multi = false, tapT = 0, lastTap = 0;
+    el.addEventListener('touchstart', (e) => {
+      if (!playing) return;
+      if (e.touches.length >= 2) { pinch = { d: dist(e.touches), b: zoomBias }; multi = true; return; }
+      multi = false; x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; t0 = Date.now();
+    }, { passive: true });
+    el.addEventListener('touchmove', (e) => {
+      if (!playing || !pinch || e.touches.length < 2) return;
+      zoomBias = Math.max(-3, Math.min(1.5, pinch.b + Math.log2(dist(e.touches) / pinch.d)));
+    }, { passive: true });
+    el.addEventListener('touchend', (e) => {
+      if (e.touches.length) return;
+      if (!playing || multi) { multi = false; pinch = null; return; }
+      const t = e.changedTouches[0], dx = t.clientX - x0, dy = t.clientY - y0, dt = Date.now() - t0;
+      if (dt < 700 && Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.8) swipeDay(dx < 0 ? 1 : -1);
+      else if (dt < 700 && Math.abs(dy) > 70 && Math.abs(dy) > Math.abs(dx) * 1.8) setSpeed(SPEEDS.indexOf(speed) + (dy < 0 ? 1 : -1));
+      else if (Math.abs(dx) < 14 && Math.abs(dy) < 14 && dt < 320) {
+        const now = Date.now();
+        if (now - lastTap < 320) { clearTimeout(tapT); lastTap = 0; zoomBias = 0; toast('Zoom reset', 1200); }
+        else { lastTap = now; clearTimeout(tapT); tapT = setTimeout(() => { if (playing) { buzz(); stop(); } }, 330); }
+      }
+    }, { passive: true });
+  })();
+
+  // Rotating the phone / resizing: the map needs to know, and in live mode it stays centred on you.
+  let resizeT = 0;
+  window.addEventListener('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(() => { if (!map) return; map.invalidateSize(); if (live && follow) flyMe(); else if (!live && scenes.items.length) seek(frac); }, 150); });
+  // The Back button (Android app): close what is open first, then leave the replay for the live map, and only then leave the app.
+  window.__tlBack = () => {
+    if (!$('ask').hidden) { const b = $('askLater'); if (b) b.click(); else closeAsk(); return true; }
+    if (document.body.classList.contains('on-stats')) { showTab('map'); return true; }
+    if (!live && data) { goLive(); return true; }
+    return false;
+  };
+  window.__tl = () => { const el = marker && marker.getElement(), cur = scenes.items.length ? locate(frac * scenes.V).s : null; return { zoom: map.getZoom(), heading, frac, V: scenes.V, items: scenes.items.map((s) => (s.kind === 'move' ? s.mode : 'stay')), cur: cur ? (cur.kind === 'move' ? cur.mode : 'stay') : null, car: !!(el && el.classList.contains('drive')), timeline: timeline.length, day: curDay, playing, dragging: !!(map && map.dragging.enabled()), live, follow, zoomBias, speed, centre: map ? [map.getCenter().lat, map.getCenter().lng] : null, me }; };   // test hook (read-only)
 
   async function dataInfo() {
     const el = $('dinfo'); if (!el) return;
     let t = savedMeta ? 'Saved copy: ' + mb(savedMeta.size) + ' (' + savedMeta.where + ')' : 'No saved copy' + (saveErr ? ' — ' + saveErr : '');
     try { if (navigator.storage) { const p = await navigator.storage.persisted(), est = await navigator.storage.estimate(); t += ' · protected: ' + (p ? 'yes' : 'no') + ' · site storage ' + mb(est.usage) + ' of ' + mb(est.quota); } } catch (e) {}
     el.textContent = t;
+  }
+
+  // ---- Place pictures: the map tiles around a place (same tiles the map already loads, so nothing new leaves the phone) ----
+  function placeThumb(lat, lng, w, h) {
+    const z = 17, n = 2 ** z, sn = Math.sin((lat * Math.PI) / 180);
+    const px = ((lng + 180) / 360) * n * 256, py = (0.5 - Math.log((1 + sn) / (1 - sn)) / (4 * Math.PI)) * n * 256, left = px - w / 2, top = py - h / 2;
+    let html = '';
+    for (let ty = Math.floor(top / 256); ty <= Math.floor((top + h - 1) / 256); ty++) for (let tx = Math.floor(left / 256); tx <= Math.floor((left + w - 1) / 256); tx++) {
+      if (ty < 0 || ty >= n) continue;
+      html += '<img alt="" draggable="false" src="https://tile.openstreetmap.org/' + z + '/' + (((tx % n) + n) % n) + '/' + ty + '.png" style="left:' + Math.round(tx * 256 - left) + 'px;top:' + Math.round(ty * 256 - top) + 'px">';
+    }
+    return '<div class="thumb" style="width:' + w + 'px;height:' + h + 'px">' + html + '<span class="tpin"></span></div>';
   }
 
   // ---- Places: the names you give them ----
@@ -585,7 +726,7 @@
   function focusPlace() {                                      // show the place on the map, in the part the sheet does not cover
     if (askMarker) { askMarker.remove(); askMarker = null; }
     if (!map || !askPlace) return;
-    map.invalidateSize();
+    map.invalidateSize(); progUntil = Date.now() + 1500;
     const p = askPlace, c = map.unproject(map.project([p.lat, p.lng], 16).add(L.point(0, Math.min(150, map.getSize().y * 0.2))), 16);
     map.setView(c, 16, { animate: false });
     askMarker = L.circleMarker([p.lat, p.lng], { radius: 16, color: '#5cbcf6', weight: 3, fillColor: '#5cbcf6', fillOpacity: 0.22, interactive: false }).addTo(map);
@@ -603,6 +744,7 @@
     $('ask').hidden = true; askPlace = null;
     if (askMarker) { askMarker.remove(); askMarker = null; }
     if (prevTab !== 'map') { const b = document.querySelector('nav button[data-v=' + prevTab + ']'); if (b) b.click(); }
+    if (live) { setFollow(true); flyMe(); }
   }
   function nextAsk() {
     if (askIdx + 1 < askQueue.length) { askIdx++; askPlace = askQueue[askIdx]; const q = questionFor(askPlace); askStage = q ? 'confirm' : 'choose'; askKind = null; focusPlace(); renderAsk(); }
@@ -615,17 +757,17 @@
     saveLabels(); refreshDay(); renderStats();
   }
   function renderAsk() {
-    const p = askPlace, card = $('ask').querySelector('.card'), l = labelFor(p), q = questionFor(p), ctx = ctxText(p);
+    const p = askPlace, pw = Math.max(200, Math.min(520, window.innerWidth - 36)), card = $('ask').querySelector('.card'), l = labelFor(p), q = questionFor(p), ctx = ctxText(p);
     const prog = askQueue.length > 1 ? '<div class="progress">Question ' + (askIdx + 1) + ' of ' + askQueue.length + '</div>' : '';
     const foot = '<div class="askfoot"><button class="ghost" id="askLater" type="button">' + (l ? 'Cancel' : 'Not now') + '</button>' +
       (l ? '<button class="ghost danger" id="askRemove" type="button">Remove name</button>' : '<button class="ghost" id="askNever" type="button">Don’t ask about this place</button>') + '</div>';
     if (askStage === 'confirm') {
       const kd = kindById[q.kind];
-      card.innerHTML = '<div class="grab"></div>' + prog + '<div class="askhead"><span class="askicon" style="--c:' + kd.color + '">' + svg(kd.icon) + '</span><div><h3 id="askTitle">' + q.title + '</h3><p>' + esc(q.why) + ' ' + esc(ctx) + '.</p></div></div>' +
+      card.innerHTML = '<div class="grab"></div>' + prog + '<div class="askhead"><span class="askicon" style="--c:' + kd.color + '">' + svg(kd.icon) + '</span><div><h3 id="askTitle">' + q.title + '</h3><p>' + esc(q.why) + ' ' + esc(ctx) + '.</p></div></div><div class="askpic">' + placeThumb(p.lat, p.lng, pw, 84) + '</div>' +
         '<div class="answers"><button class="btn primary" id="askYes" type="button">' + svg('check') + 'Yes, it’s my ' + esc(kd.label.toLowerCase()) + '</button><button class="btn" id="askNo" type="button">No, it’s something else</button></div>' + foot;
     } else {
       const title = l ? 'Rename this place' : 'What is this place for you?';
-      card.innerHTML = '<div class="grab"></div>' + prog + '<div class="askhead"><span class="askicon">' + svg('pin') + '</span><div><h3 id="askTitle">' + title + '</h3><p>' + esc(ctx) + (p.googleName ? ' · Google calls it “' + esc(p.googleName) + '”' : '') + '.</p></div></div>' +
+      card.innerHTML = '<div class="grab"></div>' + prog + '<div class="askhead"><span class="askicon">' + svg('pin') + '</span><div><h3 id="askTitle">' + title + '</h3><p>' + esc(ctx) + (p.googleName ? ' · Google calls it “' + esc(p.googleName) + '”' : '') + '.</p></div></div><div class="askpic">' + placeThumb(p.lat, p.lng, pw, 84) + '</div>' +
         '<div class="kinds">' + KINDS.map((k) => '<button class="kind" type="button" data-kind="' + k.id + '" style="--c:' + k.color + '" aria-pressed="' + (askKind === k.id) + '">' + svg(k.icon) + '<span>' + esc(k.label) + '</span></button>').join('') + '</div>' +
         '<div class="field"><input id="askName" type="text" maxlength="60" autocomplete="off" placeholder="Name it, e.g. Dana’s place (optional)" value="' + esc(l ? l.name || '' : '') + '"></div>' +
         '<div class="answers" style="margin-top:12px"><button class="btn primary" id="askSave" type="button">Save</button></div>' + foot;
@@ -715,7 +857,7 @@
       hydrate(el); return;
     }
     const newApk = st.latestBuild > st.build;
-    const screens = st.bundle ? new Date(st.bundle * 1000).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'the version in the app';
+    const screens = st.bundle ? (new Date(st.bundle * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }) + ' ' + clock(st.bundle * 1000)) : 'the version in the app';
     const sw = (id, label, on) => `<button class="switch" id="${id}" role="switch" aria-checked="${on}" aria-label="${label}" type="button"><span></span></button>`;
     el.innerHTML = `<div class="card"><h2>App updates</h2>` +
       (newApk ? `<div class="cta"><div class="t"><b>A new version of the recorder is ready</b><span>Build ${st.latestBuild}. Android asks you to confirm once.</span></div><button class="btn primary sm" id="updInstall" type="button"${st.installing ? ' disabled' : ''}>${st.installing ? 'Working…' : 'Update now'}</button></div>` : '') +
@@ -764,7 +906,7 @@
     const shown = places.slice(0, 8), maxH = shown.length ? shown[0].hours || 1 : 1, pend = pendingPlaces().length;
     const placeRows = shown.map((p) => {
       const nm = placeLabelText(p), kd = placeKind(p), named = !!labelFor(p) && !!labelName(p), hint = !named && p.guess ? ' · looks like your ' + p.guess : '';
-      return `<li><button class="row" type="button" data-pid="${p.id}" style="--c:${kd ? kd.color : 'var(--accent)'}"><span class="ico">${svg(kd ? kd.icon : 'pin')}</span><div class="grow"><div class="top"><b>${nm ? esc(nm) : '<i class="unnamed">Unnamed place</i>'}</b><span>${Math.round(p.hours).toLocaleString()} h</span></div><div class="sub">${p.visits} visit${p.visits > 1 ? 's' : ''}${hint}</div><div class="meter"><i style="width:${Math.max(3, (p.hours / maxH) * 100)}%"></i></div></div>${named ? `<span class="editdot">${svg('pencil')}</span>` : '<span class="pill">Name it</span>'}</button></li>`;
+      return `<li><button class="row" type="button" data-pid="${p.id}" style="--c:${kd ? kd.color : 'var(--accent)'}"><span class="ico pic">${placeThumb(p.lat, p.lng, 52, 52)}<em>${svg(kd ? kd.icon : 'pin')}</em></span><div class="grow"><div class="top"><b>${nm ? esc(nm) : '<i class="unnamed">Unnamed place</i>'}</b><span>${Math.round(p.hours).toLocaleString()} h</span></div><div class="sub">${p.visits} visit${p.visits > 1 ? 's' : ''}${hint}</div><div class="meter"><i style="width:${Math.max(3, (p.hours / maxH) * 100)}%"></i></div></div>${named ? `<span class="editdot">${svg('pencil')}</span>` : '<span class="pill">Name it</span>'}</button></li>`;
     }).join('');
     const sw = (id, label, on) => `<button class="switch" id="${id}" role="switch" aria-checked="${on}" aria-label="${label}" type="button"><span></span></button>`;
     el.innerHTML = `<div class="page"><div id="recWrap"></div><div id="updWrap"></div>` +

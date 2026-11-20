@@ -153,11 +153,22 @@
   .live .badge .ic { width:20px; height:20px; }
   .live .ring { position:absolute; left:-8px; top:-8px; width:46px; height:46px; border-radius:50%; border:2px solid var(--accent); opacity:0; }
   .live.stay .ring { animation:pulse 1.7s ease-out infinite; }
-  #locate { position:absolute; right:12px; bottom:calc(var(--sheet) + 12px + env(safe-area-inset-bottom)); z-index:1000; background:var(--surface-solid); color:#3b82f6; box-shadow:var(--shadow-1); }
+  #locate { position:absolute; right:12px; bottom:calc(var(--sheet) + 34px + env(safe-area-inset-bottom)); z-index:1000; background:var(--surface-solid); color:#3b82f6; box-shadow:var(--shadow-1); }
   .me { position:relative; }
   .me .medot { position:absolute; left:3px; top:3px; width:16px; height:16px; border-radius:50%; background:#3b82f6; border:3px solid #fff; box-shadow:0 1px 6px rgba(0,0,0,.5); }
   .me .mepulse { position:absolute; left:0; top:0; width:22px; height:22px; border-radius:50%; background:#3b82f6; opacity:0; animation:mepulse 2.2s ease-out infinite; }
   @keyframes mepulse { 0% { transform:scale(.6); opacity:.5; } 100% { transform:scale(2.6); opacity:0; } }
+  #hudThumb { margin-top:9px; } #hudThumb[hidden] { display:none; }
+  .thumb { position:relative; overflow:hidden; border-radius:12px; background:#1b2740; flex:none; border:1px solid var(--line-strong); max-width:100%; }
+  .thumb img { position:absolute; width:256px; height:256px; max-width:none; user-select:none; -webkit-user-drag:none; pointer-events:none; }
+  .thumb .tpin { position:absolute; left:50%; top:50%; width:13px; height:13px; margin:-7px 0 0 -7px; border-radius:50%; background:#ef4444; border:2.5px solid #fff; box-shadow:0 1px 6px rgba(0,0,0,.55); }
+  .row .ico.pic { position:relative; width:52px; height:52px; background:none; }
+  .row .ico.pic .thumb { border-radius:14px; }
+  .row .ico.pic em { position:absolute; right:-5px; bottom:-5px; width:22px; height:22px; border-radius:50%; display:grid; place-items:center; font-style:normal; background:var(--surface-solid); border:1.5px solid var(--c); color:var(--c); }
+  .row .ico.pic em .ic { width:12px; height:12px; }
+  .askpic { margin-top:12px; } .askpic .thumb { display:block; width:100%; }
+  #map.locked { touch-action:none; }
+  #locate.on { background:#3b82f6; color:#fff; border-color:transparent; }
   @keyframes pulse { 0% { transform:scale(.5); opacity:.9; } 100% { transform:scale(2.3); opacity:0; } }
 
   body.on-stats #toast { bottom:calc(24px + env(safe-area-inset-bottom)); }
@@ -269,7 +280,7 @@
       <li><span class="tag" data-icon="shield"></span><div><b>Stays on this phone</b>Your file is read here and never uploaded.</div></li>
       <li><span class="tag" data-icon="route"></span><div><b>Understands movement</b>Stops, walks, rides and drives are told apart automatically.</div></li>
     </ul>
-    <p class="build">build 19 &middot; self-updating app</p>
+    <p class="build">build 20 &middot; self-updating app</p>
   </div>
 </section>
 
@@ -284,7 +295,7 @@
   <main>
     <div id="mapView">
       <div id="map"></div>
-      <div id="hud" aria-live="off"><div id="hudTop"><div id="hudDay"></div><button id="hudEdit" type="button" hidden><span data-icon="pencil"></span><span class="lbl"></span></button></div><div id="hudTime">--:--</div><div id="hudRow"><span id="hudIcon"></span><span id="hudSub"></span></div></div>
+      <div id="hud" aria-live="off"><div id="hudTop"><div id="hudDay"></div><button id="hudEdit" type="button" hidden><span data-icon="pencil"></span><span class="lbl"></span></button></div><div id="hudTime">--:--</div><div id="hudRow"><span id="hudIcon"></span><span id="hudSub"></span></div><div id="hudThumb" hidden></div></div>
       <button id="locate" class="iconbtn" type="button" aria-label="Show my location"><span data-icon="locate"></span></button>
       <div id="dayBanner" aria-hidden="true"><b></b><span></span></div>
       <div id="controls">
