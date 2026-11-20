@@ -17,7 +17,12 @@
         // concat, not push(...arr): spreading a huge array overflows the call stack.
         merged.visits = merged.visits.concat(d.visits); merged.trips = merged.trips.concat(d.trips); merged.points = merged.points.concat(d.points);
       }
-    } catch (err) { $('status').textContent = 'Could not read file: ' + err.message; return; }
+    } catch (err) {
+      // Show where it failed (first stack frames only; no file contents) to make problems diagnosable.
+      const where = String(err.stack || '').split('\n').slice(1, 3).map((s) => s.trim().replace(/^at /, '').slice(0, 80)).join(' | ');
+      $('status').textContent = 'Could not read file: ' + err.message + (where ? ' [' + where + ']' : '');
+      return;
+    }
     start(merged);
   };
 
@@ -139,5 +144,11 @@
       `<div class="card"><div class="lbl">Where you spent the most time</div><ul>${top || '<li>none</li>'}</ul></div>`;
   }
 
-  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
+  // Self-updating: check for a new version on every open, and reload into it automatically
+  // while still on the import screen (never mid-session, so loaded data isn't lost).
+  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+    const hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !data) location.reload(); });
+    navigator.serviceWorker.register('sw.js').then((reg) => reg.update()).catch(() => {});
+  }
 })();
