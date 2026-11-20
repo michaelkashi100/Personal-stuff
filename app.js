@@ -144,5 +144,11 @@
       `<div class="card"><div class="lbl">Where you spent the most time</div><ul>${top || '<li>none</li>'}</ul></div>`;
   }
 
-  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
+  // Self-updating: check for a new version on every open, and reload into it automatically
+  // while still on the import screen (never mid-session, so loaded data isn't lost).
+  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+    const hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !data) location.reload(); });
+    navigator.serviceWorker.register('sw.js').then((reg) => reg.update()).catch(() => {});
+  }
 })();
