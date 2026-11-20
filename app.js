@@ -655,6 +655,32 @@
       NATIVE.clearRecorded(); location.reload();                     // starts again from what is left (an imported file, or nothing)
     };
   }
+  // App updates (Android app): the screens and analysis update themselves; the recorder asks for one tap.
+  function renderUpdates() {
+    const el = $('updWrap'); if (!el) return;
+    if (!NATIVE) { el.innerHTML = ''; return; }
+    const st = nativeStatus || nat('status') || {};
+    if (!(st.bridge >= 2)) {                                   // an APK from before automatic updates existed: it needs one last manual install
+      el.innerHTML = `<div class="card"><h2>App updates</h2><p class="note" style="margin-top:0">This version of the app cannot update itself yet. Install the latest one once; after that updates arrive on their own.</p><div class="actions"><a class="btn primary" href="${APK_URL}" rel="noopener">${svg('upload')}Get the latest app</a></div></div>`;
+      hydrate(el); return;
+    }
+    const newApk = st.latestBuild > st.build;
+    const screens = st.bundle ? new Date(st.bundle * 1000).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'the version in the app';
+    const sw = (id, label, on) => `<button class="switch" id="${id}" role="switch" aria-checked="${on}" aria-label="${label}" type="button"><span></span></button>`;
+    el.innerHTML = `<div class="card"><h2>App updates</h2>` +
+      (newApk ? `<div class="cta"><div class="t"><b>A new version of the recorder is ready</b><span>Build ${st.latestBuild}. Android asks you to confirm once.</span></div><button class="btn primary sm" id="updInstall" type="button"${st.installing ? ' disabled' : ''}>${st.installing ? 'Working…' : 'Update now'}</button></div>` : '') +
+      `<p class="note" style="margin-top:${newApk ? 8 : 0}px">Recorder build ${st.build}. Screens and analysis from ${screens}.</p>` +
+      (st.checking ? '<p class="note">Checking for updates…</p>' : st.updateMsg ? `<p class="note">${esc(st.updateMsg)}</p>` : '') +
+      `<div class="setting"><div class="t"><b>Update automatically</b><span>Screens and analysis update in the background. Nothing but the update itself is downloaded.</span></div>${sw('swAuto', 'Update automatically', st.autoUpdate)}</div>` +
+      `<div class="actions"><button class="btn" id="updCheck" type="button"${st.checking ? ' disabled' : ''}>${svg('refresh')}Check for updates</button></div></div>`;
+    hydrate(el);
+    $('updCheck').onclick = () => { buzz(); NATIVE.checkForUpdates(); };
+    const inst = $('updInstall'); if (inst) inst.onclick = () => { buzz(); NATIVE.installUpdate(); };
+    $('swAuto').onclick = () => { const on = $('swAuto').getAttribute('aria-checked') !== 'true'; $('swAuto').setAttribute('aria-checked', String(on)); buzz(); NATIVE.setAutoUpdate(on); };
+  }
+  // The app downloaded newer screens: load them (your data and the viewed day are kept).
+  window.__tlBundleUpdated = () => { toast('Updated. Reloading…', 1500); setTimeout(() => location.reload(), 700); };
+
   async function reloadSources() {
     if (reloadingNative) return; reloadingNative = true;
     try {
@@ -668,7 +694,7 @@
     if (!NATIVE) return;
     const st = nat('status'); if (!st) return;
     const prev = nativeFixes; nativeStatus = st; nativeFixes = st.fixes;
-    renderRecording();
+    renderRecording(); renderUpdates();
     if (!data) { if (st.fixes > 0) reloadSources(); else $('status').textContent = recState(st).key === 'on' ? 'Recording is on. Your first trip appears here after you start moving.' : $('status').textContent; }
     else if (prev >= 0 && st.fixes !== prev && !playing && $('ask').hidden) reloadSources().then(() => toast('Updated with your latest recordings', 2500));
   }
@@ -691,7 +717,7 @@
       return `<li><button class="row" type="button" data-pid="${p.id}" style="--c:${kd ? kd.color : 'var(--accent)'}"><span class="ico">${svg(kd ? kd.icon : 'pin')}</span><div class="grow"><div class="top"><b>${nm ? esc(nm) : '<i class="unnamed">Unnamed place</i>'}</b><span>${Math.round(p.hours).toLocaleString()} h</span></div><div class="sub">${p.visits} visit${p.visits > 1 ? 's' : ''}${hint}</div><div class="meter"><i style="width:${Math.max(3, (p.hours / maxH) * 100)}%"></i></div></div>${named ? `<span class="editdot">${svg('pencil')}</span>` : '<span class="pill">Name it</span>'}</button></li>`;
     }).join('');
     const sw = (id, label, on) => `<button class="switch" id="${id}" role="switch" aria-checked="${on}" aria-label="${label}" type="button"><span></span></button>`;
-    el.innerHTML = `<div class="page"><div id="recWrap"></div>` +
+    el.innerHTML = `<div class="page"><div id="recWrap"></div><div id="updWrap"></div>` +
       `<div class="card hero-card"><h2>${year ?? 'All time'} in review</h2><div class="big num">${Math.round(s.totalKm).toLocaleString()}<small>km travelled</small></div><p>Across ${s.visitCount.toLocaleString()} stops and ${s.uniquePlaces.toLocaleString()} different places.</p></div>` +
       `<div class="tiles"><div class="tile"><b>${s.activeDays.toLocaleString()}</b><span>active days</span></div><div class="tile"><b>${s.uniquePlaces.toLocaleString()}</b><span>different places</span></div>` +
       (s.longest ? `<div class="tile"><b>${fmtKm(s.longest.dist / 1000).replace(' km', '')}<small style="font-size:13px;color:var(--text-2);font-weight:600"> km</small></b><span>longest ${MODE_NAME[s.longest.mode].toLowerCase()} leg</span></div>` : '') + `</div>` +
@@ -715,7 +741,7 @@
       if (!b.classList.contains('armed')) { b.classList.add('armed'); lbl.textContent = 'Tap again to confirm'; clearTimeout(armedT); armedT = setTimeout(() => { b.classList.remove('armed'); lbl.textContent = 'Forget my data'; }, 3500); return; }
       await clearFiles(); try { localStorage.removeItem('tl-places'); localStorage.removeItem('tl-ask-snooze'); } catch (e) {} location.reload();
     };
-    renderRecording(); wakeInfo(); dataInfo();
+    renderRecording(); renderUpdates(); wakeInfo(); dataInfo();
   }
 
   // Open the saved copy (and, in the Android app, the recorded locations) automatically; show the picker only when there is nothing.
