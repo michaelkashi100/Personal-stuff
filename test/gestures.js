@@ -1,0 +1,74 @@
+// Live location + gestures + 24h clock, driven with real touch events (CDP). usage: node test/gestures.js sample.json
+const { chromium } = require('playwright');
+let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) fails++; };
+(async () => {
+  const b = await chromium.launch();
+  const c = await b.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, permissions: ['geolocation'], geolocation: { latitude: 32.0853, longitude: 34.7818, accuracy: 15 } });
+  const p = await c.newPage(); const errs = []; p.on('pageerror', (e) => errs.push(e.message));
+  const cdp = await c.newCDPSession(p);
+  const touch = async (type, pts) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: pts.map(([x, y], i) => ({ x, y, id: i })) });
+  const swipe = async (x0, y0, x1, y1, steps = 8) => { await touch('touchStart', [[x0, y0]]); for (let i = 1; i <= steps; i++) { await touch('touchMove', [[x0 + ((x1 - x0) * i) / steps, y0 + ((y1 - y0) * i) / steps]]); await p.waitForTimeout(8); } await touch('touchEnd', []); };
+  const tap = async (x, y) => { await touch('touchStart', [[x, y]]); await p.waitForTimeout(40); await touch('touchEnd', []); };
+  const st = () => p.evaluate(() => window.__tl());
+  const tab = () => p.evaluate(() => document.querySelector('nav button.on').dataset.v);
+  await p.goto('http://localhost:8765/index.html'); await p.setInputFiles('#file', process.argv[2]); await p.waitForSelector('#app', { state: 'visible' }); await p.waitForTimeout(2500);
+  let s = await st();
+  ok(s.live && s.follow, 'opens live and following');
+  ok(s.me && Math.abs(s.centre[0] - 32.0853) < 0.002 && Math.abs(s.centre[1] - 34.7818) < 0.002, 'map is centred on my position ' + JSON.stringify(s.centre));
+  ok(/^\d\d:\d\d$/.test(await p.textContent('#hudTime')), 'HUD clock is 24h: ' + await p.textContent('#hudTime'));
+  ok(!/\b[AP]M\b/i.test(await p.evaluate(() => document.body.innerText)), 'no AM/PM anywhere on the page');
+  ok((await p.textContent('#hudDay')) === 'Now', 'HUD says Now');
+  await c.setGeolocation({ latitude: 32.0953, longitude: 34.7918, accuracy: 10 }); await p.waitForTimeout(2500); s = await st();
+  ok(Math.abs(s.centre[0] - 32.0953) < 0.003, 'map follows me when I move ' + JSON.stringify(s.centre));
+  await swipe(200, 300, 330, 380); s = await st();
+  ok(!s.follow, 'dragging the map stops following');
+  await p.click('#locate'); await p.waitForTimeout(1200); s = await st();
+  ok(s.follow && Math.abs(s.centre[0] - 32.0953) < 0.003, 'locate button re-centres and follows');
+  // replay
+  await p.click('#play'); await p.waitForTimeout(400); s = await st();
+  ok(!s.live && s.playing, 'play leaves live mode and starts the replay');
+  await tap(195, 250); await p.waitForTimeout(600); s = await st();
+  ok(!s.playing, 'tap on the map pauses the replay');
+  await p.click('#play'); await p.waitForTimeout(300);
+  const items = await p.$$eval('#day option', (o) => o.length);
+  if (items > 1) {
+    const before = await p.inputValue('#day');
+    await swipe(90, 250, 300, 255); await p.waitForTimeout(500);
+    const after = await p.inputValue('#day');
+    ok(before !== after, 'swipe right on the playing map goes to the previous day (' + before + ' -> ' + after + ')');
+    await swipe(300, 250, 90, 255); await p.waitForTimeout(500);
+    ok((await p.inputValue('#day')) === before, 'swipe left goes forward again');
+  }
+  await swipe(195, 400, 195, 250); await p.waitForTimeout(300); s = await st();
+  ok(s.speed === 2, 'swipe up speeds the replay up (x' + s.speed + ')');
+  await swipe(195, 250, 195, 400); await p.waitForTimeout(300); s = await st();
+  ok(s.speed === 1, 'swipe down slows it back');
+  await touch('touchStart', [[150, 300], [240, 300]]);
+  for (let i = 1; i <= 6; i++) { await touch('touchMove', [[150 - i * 12, 300], [240 + i * 12, 300]]); await p.waitForTimeout(10); }
+  await touch('touchEnd', []); await p.waitForTimeout(200); s = await st();
+  ok(s.zoomBias > 0.3, 'pinch out changes the replay zoom (bias ' + s.zoomBias.toFixed(2) + ')');
+  await tap(195, 300); await p.waitForTimeout(80); await tap(195, 300); await p.waitForTimeout(500); s = await st();
+  ok(s.zoomBias === 0 && s.playing, 'double-tap resets the zoom and keeps playing');
+  await p.click('#play'); await p.waitForTimeout(200); s = await st();
+  ok(!s.playing && s.dragging, 'paused: the map is free to drag again');
+  const d1 = await p.inputValue('#day');
+  await swipe(80, 800, 300, 805); await p.waitForTimeout(500);
+  const d2 = await p.inputValue('#day');
+  ok(items < 2 || d1 !== d2, 'swipe right on the bottom panel -> previous day (' + d1 + ' -> ' + d2 + ')');
+  await swipe(300, 30, 60, 32); await p.waitForTimeout(400);
+  ok((await tab()) === 'stats', 'swipe left on the top bar opens Insights');
+  ok((await p.$$('#statsView .row .thumb img')).length > 0, 'places in Insights have a picture');
+  await swipe(60, 400, 330, 405); await p.waitForTimeout(400);
+  ok((await tab()) === 'map', 'swipe right in Insights returns to the map');
+  s = await st();
+  ok(!s.live, 'returning to the map keeps the replay (not forced live)');
+  await p.click('#locate'); await p.waitForTimeout(500); s = await st();
+  ok(s.live && s.follow && !s.playing, 'locate from a replay returns to live and follows me');
+  await p.click('#play'); await p.waitForTimeout(200);
+  ok(await p.evaluate(() => window.__tlBack()) === true && (await st()).live, 'Back from a replay returns to the live map');
+  ok(await p.evaluate(() => window.__tlBack()) === false, 'Back on the live map is left to the app (exit)');
+  const layers = await p.evaluate(() => document.querySelectorAll('.leaflet-tile-pane .leaflet-layer').length);
+  ok(layers === 2, 'two tile layers (blurry fallback under the sharp one): ' + layers);
+  ok(errs.length === 0, 'no page errors ' + JSON.stringify(errs));
+  await b.close(); process.exit(fails ? 1 : 0);
+})();
