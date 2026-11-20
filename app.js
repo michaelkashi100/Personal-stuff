@@ -14,7 +14,8 @@
       for (const f of files) {
         $('status').textContent = 'Reading ' + f.name + '…';
         const d = TL.parseTimeline(JSON.parse(await f.text()));
-        merged.visits.push(...d.visits); merged.trips.push(...d.trips); merged.points.push(...d.points);
+        // concat, not push(...arr): spreading a huge array overflows the call stack.
+        merged.visits = merged.visits.concat(d.visits); merged.trips = merged.trips.concat(d.trips); merged.points = merged.points.concat(d.points);
       }
     } catch (err) { $('status').textContent = 'Could not read file: ' + err.message; return; }
     start(merged);
@@ -41,9 +42,16 @@
     map = L.map('map', { zoomControl: false });
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
     dayLayer = L.layerGroup().addTo(map);
-    const pts = data.visits.map((v) => [v.lat, v.lng]).concat(data.points.map((p) => [p.lat, p.lng]));
-    pts.forEach((p) => L.circleMarker(p, { radius: 3, stroke: false, fillColor: '#38bdf8', fillOpacity: 0.25 }).addTo(map));
-    if (pts.length) map.fitBounds(pts, { padding: [20, 20] }); else map.setView([0, 0], 2);
+    const all = data.visits.map((v) => [v.lat, v.lng]).concat(data.points.map((p) => [p.lat, p.lng]));
+    // Background dots: draw on a canvas and cap at ~15k points so big files stay fast on a phone.
+    const step = Math.max(1, Math.ceil(all.length / 15000));
+    const canvas = L.canvas({ padding: 0.5 });
+    for (let i = 0; i < all.length; i += step) L.circleMarker(all[i], { renderer: canvas, radius: 3, stroke: false, fillColor: '#38bdf8', fillOpacity: 0.25, interactive: false }).addTo(map);
+    if (all.length) {
+      let a = 90, b = 180, c = -90, d = -180;   // bounds without spreading into Math.min/max
+      for (const p of all) { if (p[0] < a) a = p[0]; if (p[0] > c) c = p[0]; if (p[1] < b) b = p[1]; if (p[1] > d) d = p[1]; }
+      map.fitBounds([[a, b], [c, d]], { padding: [20, 20] });
+    } else map.setView([0, 0], 2);
   }
 
   const dayKey = (t) => { const d = new Date(t); return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime(); };
