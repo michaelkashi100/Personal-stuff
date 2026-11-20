@@ -8,7 +8,7 @@ const { chromium } = require('playwright');
   await p.waitForSelector('#app', { state: 'visible' });
   console.log('days:', await p.locator('#day option').count());
   await p.click('#play'); await p.waitForTimeout(600);
-  console.log('label:', await p.textContent('#dayLabel'));
+  console.log('label:', await p.textContent('#hudTime'));
   await p.screenshot({ path: process.argv[3] + '/map.png' });
   await p.click('nav button[data-v=stats]');
   console.log((await p.innerText('#statsView')).replace(/\n+/g, ' | '));

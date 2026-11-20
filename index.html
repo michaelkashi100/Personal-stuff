@@ -30,8 +30,7 @@
   #controls .row { display:flex; gap:8px; align-items:center; }
   #controls input[type=range] { flex:1; }
   select,#controls button { background:#334155; color:var(--fg); border:0; border-radius:8px; padding:8px 12px; font-size:.95rem; }
-  #dayLabel { color:var(--fg); font-size:.95rem; font-variant-numeric:tabular-nums; }
-  #summary { color:var(--mute); font-size:.85rem; flex:1; }
+    #summary { color:var(--mute); font-size:.85rem; flex:1; }
   #controls .meta { justify-content:space-between; }
   /* timeline bar: movement vs. time spent still */
   #barwrap { position:relative; height:34px; border-radius:8px; overflow:hidden; background:#0f172a; }
@@ -43,17 +42,22 @@
   #fill { background:rgba(255,255,255,.12); width:0; pointer-events:none; }
   #playhead { position:absolute; top:0; bottom:0; width:2px; margin-left:-1px; background:#fff; pointer-events:none; }
   #barwrap #scrub { position:absolute; inset:0; width:100%; height:100%; margin:0; opacity:0; }
-  /* live dot: pulses while you were stationary */
-  .live .core { position:absolute; left:3px; top:3px; width:12px; height:12px; border-radius:50%; background:#38bdf8; border:3px solid #fff; }
-  .live .ring { position:absolute; inset:0; border-radius:50%; border:2px solid #38bdf8; opacity:0; }
+  /* dark map look (tiles are recoloured in the browser; nothing extra is downloaded) */
+  .leaflet-container { background:#0b1220; }
+  .leaflet-tile-pane { filter:invert(1) hue-rotate(180deg) brightness(.92) saturate(.65) contrast(.95); }
+  .leaflet-control-attribution { background:rgba(15,23,42,.7)!important; color:var(--mute)!important; }
+  .leaflet-control-attribution a { color:var(--mute)!important; }
+  /* car: faces the direction of travel; ring pulses while parked */
+  .live .carwrap { position:absolute; left:0; top:-10px; width:24px; height:44px; filter:drop-shadow(0 2px 4px rgba(0,0,0,.55)); }
+  .live .carwrap svg { display:block; }
+  .live .ring { position:absolute; left:-6px; top:-6px; width:36px; height:36px; border-radius:50%; border:2px solid #38bdf8; opacity:0; }
   .live.stay .ring { animation:pulse 1.6s ease-out infinite; }
-  @keyframes pulse { 0% { transform:scale(.5); opacity:.9; } 100% { transform:scale(2.4); opacity:0; } }
-  .livetip { background:#0f172af0; color:var(--fg); border:1px solid #38bdf8; font-size:.8rem; }
-  .livetip:before { display:none; }
-  .card { background:var(--card); border-radius:16px; padding:18px; margin-bottom:14px; }
-  .card .big { font-size:2.2rem; font-weight:700; color:var(--acc); }
-  .card .lbl { color:var(--mute); font-size:.9rem; }
-  ul { padding-left:1.1em; margin:.4em 0 0; }
+  @keyframes pulse { 0% { transform:scale(.5); opacity:.9; } 100% { transform:scale(2.2); opacity:0; } }
+  /* floating clock panel */
+  #hud { position:absolute; top:12px; left:12px; z-index:1000; padding:8px 14px 9px; border-radius:16px; pointer-events:none;
+    background:rgba(15,23,42,.72); -webkit-backdrop-filter:blur(8px); backdrop-filter:blur(8px); border:1px solid rgba(148,163,184,.18); }
+  #hudTime { font-size:1.7rem; font-weight:700; line-height:1.1; font-variant-numeric:tabular-nums; }
+  #hudSub { font-size:.82rem; color:var(--acc); margin-top:2px; }
 </style>
 </head>
 <body>
@@ -63,7 +67,7 @@
   <button class="btn" id="pick">Choose file</button>
   <input type="file" id="file" accept=".json,application/json" hidden multiple>
   <p id="status"></p>
-  <p style="font-size:.75rem;opacity:.6">build 5 (stay-aware replay)</p>
+  <p style="font-size:.75rem;opacity:.6">build 6 (car replay)</p>
 </section>
 
 <section id="app">
@@ -71,14 +75,15 @@
   <main>
     <div id="mapView">
       <div id="map"></div>
+      <div id="hud"><div id="hudTime">--:--</div><div id="hudSub"></div></div>
       <div id="controls">
         <div class="row">
           <select id="day"></select>
           <button id="play">▶ Play</button>
-          <select id="speed"><option value="1">1×</option><option value="4" selected>4×</option><option value="16">16×</option></select>
+          <select id="speed"><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select>
         </div>
-        <div id="barwrap"><div id="bar"></div><div id="fill"></div><div id="playhead"></div><input type="range" id="scrub" min="0" max="1000" value="0" aria-label="Replay position"></div>
-        <div class="row meta"><span id="summary"></span><span id="dayLabel"></span></div>
+        <div id="barwrap"><div id="bar"></div><div id="fill"></div><div id="playhead"></div><input type="range" id="scrub" min="0" max="100000" value="0" aria-label="Replay position"></div>
+        <div class="row meta"><span id="summary"></span></div>
       </div>
     </div>
     <div id="statsView"></div>
