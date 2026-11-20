@@ -9,6 +9,7 @@ import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import com.google.android.gms.location.ActivityRecognition
@@ -76,6 +77,11 @@ object Recorder {
     private fun scheduleHeartbeat(c: Context) {
         val request = PeriodicWorkRequestBuilder<HeartbeatWorker>(Policy.HEARTBEAT_MINUTES, TimeUnit.MINUTES).build()
         WorkManager.getInstance(c).enqueueUniquePeriodicWork("heartbeat", ExistingPeriodicWorkPolicy.KEEP, request)
+    }
+
+    /** One coarse location right away, so the first recording does not wait an hour. */
+    fun checkInNow(c: Context) {
+        if (enabled(c)) WorkManager.getInstance(c).enqueue(OneTimeWorkRequestBuilder<HeartbeatWorker>().build())
     }
 
     fun stop(c: Context) {

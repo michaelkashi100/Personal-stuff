@@ -55,6 +55,7 @@ class MainActivity : ComponentActivity() {
             settings.domStorageEnabled = true
             settings.allowFileAccess = false
             settings.allowContentAccess = false
+            settings.userAgentString = settings.userAgentString + " TimelineApp/1"   // map tiles ask apps to identify themselves
             addJavascriptInterface(Bridge(this@MainActivity), "TLNative")
             webViewClient = object : WebViewClient() {
                 override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
@@ -68,7 +69,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
             webChromeClient = object : WebChromeClient() {
-                override fun onShowFileChooser(view: WebView, callback: ValueCallback<Array<Uri>>, params: FileChooserParams): Boolean {
+                override fun onShowFileChooser(view: WebView, callback: ValueCallback<Array<Uri>>, params: WebChromeClient.FileChooserParams): Boolean {
                     fileCallback?.onReceiveValue(null)
                     fileCallback = callback
                     pickFiles.launch(arrayOf("*/*"))
@@ -110,6 +111,7 @@ class MainActivity : ComponentActivity() {
                 askOne.launch(Manifest.permission.POST_NOTIFICATIONS)
             else -> {
                 Recorder.register(this)
+                Recorder.checkInNow(this)
                 notifyWeb()
             }
         }
