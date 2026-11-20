@@ -17,7 +17,12 @@
         // concat, not push(...arr): spreading a huge array overflows the call stack.
         merged.visits = merged.visits.concat(d.visits); merged.trips = merged.trips.concat(d.trips); merged.points = merged.points.concat(d.points);
       }
-    } catch (err) { $('status').textContent = 'Could not read file: ' + err.message; return; }
+    } catch (err) {
+      // Show where it failed (first stack frames only; no file contents) to make problems diagnosable.
+      const where = String(err.stack || '').split('\n').slice(1, 3).map((s) => s.trim().replace(/^at /, '').slice(0, 80)).join(' | ');
+      $('status').textContent = 'Could not read file: ' + err.message + (where ? ' [' + where + ']' : '');
+      return;
+    }
     start(merged);
   };
 
