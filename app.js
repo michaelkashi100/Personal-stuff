@@ -58,6 +58,7 @@
     bag: '<path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/>',
     food: '<path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"/><path d="M7 2v20"/><path d="M21 15V2a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/>',
     star: '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>',
+    locate: '<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="8"/><path d="M12 1v3"/><path d="M12 20v3"/><path d="M1 12h3"/><path d="M20 12h3"/>',
     pencil: '<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/>',
     check: '<polyline points="20 6 9 17 4 12"/>',
     trash: '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/>',
@@ -181,6 +182,7 @@
     document.querySelectorAll('nav button').forEach((x) => { x.classList.toggle('on', x === b); x.setAttribute('aria-selected', String(x === b)); });
     $('mapView').style.display = b.dataset.v === 'map' ? 'block' : 'none';
     $('statsView').style.display = b.dataset.v === 'stats' ? 'block' : 'none';
+    syncLoc();
     if (b.dataset.v === 'map') { map.invalidateSize(); if (scenes.items.length) seek(frac); }   // re-frame the camera: it was sized while hidden
   }));
 
@@ -200,7 +202,55 @@
       for (const p of all) { if (p[0] < a) a = p[0]; if (p[0] > c) c = p[0]; if (p[1] < b) b = p[1]; if (p[1] > d) d = p[1]; }
       map.fitBounds([[a, b], [c, d]], { padding: [20, 20] });
     } else map.setView([0, 0], 2);
+    initMe();
   }
+
+  // ---- Your current location (blue dot, like Google Maps) ----
+  let me = null, meDot = null, meAcc = null, meWatch = null, meCentered = false, meTouched = false, meDenied = false;
+  function initMe() {
+    meDot = meAcc = null; meCentered = false; meTouched = false;
+    map.on('dragstart zoomstart', (e) => { if (!e.hard && !meProgrammatic) meTouched = true; });
+    if (me) drawMe();
+    syncLoc();
+  }
+  let meProgrammatic = false;
+  function drawMe() {
+    if (!map || !me) return;
+    const ll = [me.lat, me.lng];
+    if (!meDot) {
+      meAcc = L.circle(ll, { radius: me.acc, stroke: false, fillColor: '#3b82f6', fillOpacity: 0.14, interactive: false }).addTo(map);
+      meDot = L.marker(ll, { icon: L.divIcon({ className: 'me', html: '<i class="mepulse"></i><i class="medot"></i>', iconSize: [22, 22] }), interactive: false, keyboard: false, zIndexOffset: 500 }).addTo(map);
+    } else { meDot.setLatLng(ll); meAcc.setLatLng(ll); meAcc.setRadius(me.acc); }
+    if (!meCentered && !meTouched && !playing) { meCentered = true; flyMe(); }
+  }
+  function flyMe() {
+    if (!map || !me) return;
+    meProgrammatic = true;
+    map.setView([me.lat, me.lng], Math.max(map.getZoom(), 16), { animate: true });
+    setTimeout(() => { meProgrammatic = false; }, 700);
+  }
+  function syncLoc() {
+    const want = !!(map && navigator.geolocation && document.visibilityState === 'visible' && !document.body.classList.contains('on-stats'));
+    if (!want) { if (meWatch != null) { navigator.geolocation.clearWatch(meWatch); meWatch = null; } return; }
+    if (meWatch != null) return;
+    try {
+      meWatch = navigator.geolocation.watchPosition((p) => {
+        meDenied = false;
+        me = { lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.max(p.coords.accuracy || 30, 8) };
+        drawMe();
+      }, (err) => {
+        if (meWatch != null) { navigator.geolocation.clearWatch(meWatch); meWatch = null; }
+        if (err && err.code === 1 && !meDenied) { meDenied = true; toast('Allow location to see where you are on the map.', 5000); }
+      }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 });
+    } catch (e) { meWatch = null; }
+  }
+  document.addEventListener('visibilitychange', syncLoc);
+  $('locate').onclick = () => {
+    buzz();
+    if (!me) { meDenied = false; syncLoc(); toast('Finding your location…', 3000); return; }
+    if (playing) stop();
+    meTouched = false; flyMe();
+  };
 
   const dayKey = (t) => { const d = new Date(t); return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime(); };
   let dayList = [], dayTrips = new Map(), curDay = null, speed = 1, autoNext = true, keepOn = true, wake = null;
@@ -698,7 +748,7 @@
     if (!data) { if (st.fixes > 0) reloadSources(); else $('status').textContent = recState(st).key === 'on' ? 'Recording is on. Your first trip appears here after you start moving.' : $('status').textContent; }
     else if (prev >= 0 && st.fixes !== prev && !playing && $('ask').hidden) reloadSources().then(() => toast('Updated with your latest recordings', 2500));
   }
-  window.__tlNativeChanged = refreshNative;
+  window.__tlNativeChanged = () => { if (!me) { meDenied = false; syncLoc(); } return refreshNative(); };
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshNative(); });
 
   // ---- Insights ----
