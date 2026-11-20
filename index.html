@@ -233,6 +233,12 @@
   .actions { display:flex; gap:10px; margin-top:12px; }
   .actions .btn { flex:1; min-width:0; padding:0 12px; white-space:nowrap; }
   .note { margin:10px 0 0; font-size:12.5px; color:var(--muted); line-height:1.4; }
+  .recstate { display:flex; align-items:center; gap:10px; font-size:17px; font-weight:680; margin-top:2px; }
+  .recstate i { width:11px; height:11px; border-radius:50%; background:var(--muted); flex:none; }
+  .recstate.on i { background:var(--c-walk); box-shadow:0 0 0 5px rgba(74,222,128,.18); }
+  .recstate.perm i { background:var(--c-bike); box-shadow:0 0 0 5px rgba(251,191,36,.18); }
+  a.btn { text-decoration:none; }
+  #startRec[hidden] { display:none; }
   .empty { text-align:center; color:var(--muted); padding:30px 10px; font-size:14px; }
 
   @media (max-width:360px) { nav button span.lbl { display:none; } #hudTime { font-size:28px; } }
@@ -250,6 +256,7 @@
     <h1>Timeline</h1>
     <p class="lead">Replay your days from your Google Timeline export: where you stopped and how you got there.</p>
     <button class="btn primary" id="pick" type="button"><span data-icon="upload"></span>Choose your Timeline file</button>
+    <button class="btn primary" id="startRec" type="button" hidden><span data-icon="pin"></span>Start recording</button>
     <input type="file" id="file" accept=".json,application/json" hidden multiple>
     <div class="spinner" aria-hidden="true"></div>
     <p id="status" role="status"></p>
@@ -257,7 +264,7 @@
       <li><span class="tag" data-icon="shield"></span><div><b>Stays on this phone</b>Your file is read here and never uploaded.</div></li>
       <li><span class="tag" data-icon="route"></span><div><b>Understands movement</b>Stops, walks, rides and drives are told apart automatically.</div></li>
     </ul>
-    <p class="build">build 16 &middot; named places</p>
+    <p class="build">build 17 &middot; recording</p>
   </div>
 </section>
 

@@ -18,6 +18,12 @@
   }
   try { sessionStorage.removeItem('tl-refresh'); } catch (e) {}
   let data = null, timeline = [], places = [], map, dayLayer, marker;
+  // Inside the Android app a native recorder is available as window.TLNative (it records in the background and keeps the data on the phone).
+  const NATIVE = typeof window.TLNative === 'object' && window.TLNative ? window.TLNative : null;
+  const nat = (fn, ...a) => { try { const r = NATIVE[fn](...a); return typeof r === 'string' && r[0] === '{' ? JSON.parse(r) : r; } catch (e) { return null; } };
+  const nativeSource = () => ({ name: 'Recorded on this phone', ephemeral: true, text: () => Promise.resolve(String(NATIVE.recordsJson(0))) });
+  const savedSource = (e) => ({ name: e.name, text: () => (e.text != null ? Promise.resolve(e.text) : e.blob.text()) });
+  let nativeStatus = null, nativeFixes = -1, reloadingNative = false;
   const DAY = 86400000;
   const MODE_COLOR = { drive: '#f87171', walk: '#4ade80', run: '#a3e635', bike: '#fbbf24', transit: '#a78bfa', flight: '#fb923c', other: '#94a3b8' };
   const MODE_NAME = { drive: 'Driving', walk: 'Walking', run: 'Running', bike: 'Cycling', transit: 'Transit', flight: 'Flying', other: 'Moving' };
@@ -123,7 +129,7 @@
         const d = TL.parseTimeline(json);
         // concat, not push(...arr): spreading a huge array overflows the call stack.
         merged.visits = merged.visits.concat(d.visits); merged.trips = merged.trips.concat(d.trips); merged.points = merged.points.concat(d.points); merged.hints = merged.hints.concat(d.hints);
-        if (save) keep.push({ name: f.name, text: JSON.stringify(slim(json)) });
+        if (save && !f.ephemeral) keep.push({ name: f.name, text: JSON.stringify(slim(json)) });
       }
     } catch (err) {
       // Show where it failed (first stack frames only; no file contents) to make problems diagnosable.
@@ -131,14 +137,22 @@
       fail('Could not read file: ' + err.message + (where ? ' [' + where + ']' : ''));
       return false;
     }
+    let tl;
+    try { $('status').textContent = 'Analyzing your movements…'; await new Promise((r) => setTimeout(r, 30)); tl = TL.analyze(merged); }
+    catch (err) { fail('Could not analyse the data: ' + err.message); return false; }
+    if (!tl.length) {                                          // nothing to show (yet): say so, and do not save a copy that shows nothing
+      if (data) toast('No trips or stops found in that data.', 4000);
+      else { setLoading(false, NATIVE ? 'Recording is on. Your first trip appears here after you start moving.' : 'No trips or stops found in this file.'); $('import').style.visibility = 'visible'; }
+      return false;
+    }
     let res = null;
-    if (save) {
+    if (save && keep.length) {
       res = await saveFiles(keep);
       if (res.ok) { savedMeta = { size: res.size, where: res.where }; saveErr = ''; if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {}); }
       else { savedMeta = null; saveErr = res.error; }
     }
-    try { $('status').textContent = 'Analyzing your movements…'; await new Promise((r) => setTimeout(r, 30)); start(merged); }
-    catch (err) { fail('Could not analyse the data: ' + err.message); return false; }
+    try { start(merged, tl); }
+    catch (err) { fail('Could not show the data: ' + err.message); return false; }
     if (res) toast(res.ok ? 'Saved on this phone · ' + mb(res.size) : "Couldn't save a copy: " + res.error, res.ok ? 3500 : 9000);
     return true;
   }
@@ -146,17 +160,18 @@
   $('file').onchange = (e) => {
     const files = [...e.target.files];
     e.target.value = '';                                     // allow picking the same file again later
-    if (files.length) loadFromSources(files.map((f) => ({ name: f.name, text: () => f.text() })), true);
+    if (files.length) { const srcs = files.map((f) => ({ name: f.name, text: () => f.text() })); if (NATIVE && nativeStatus && nativeStatus.fixes > 0) srcs.push(nativeSource()); loadFromSources(srcs, true); }
   };
 
-  function start(d) {
+  function start(d, tl) {
     d.visits.sort((a, b) => a.start - b.start); d.trips.sort((a, b) => a.start - b.start);
-    if (map) { stop(); map.remove(); map = null; }           // "Change file" while the app is open
-    data = d; timeline = TL.analyze(d); places = TL.clusterPlaces(timeline);
+    const first = !data;
+    if (map) { stop(); map.remove(); map = null; }           // "Change file" / new recordings while the app is open
+    data = d; timeline = tl || TL.analyze(d); places = TL.clusterPlaces(timeline);
     $('import').style.display = 'none';
     $('app').style.display = 'flex';
     initMap(); initDays(); renderStats();
-    document.querySelector('nav button').click();
+    if (first) document.querySelector('nav button').click();   // only the first time: a refresh keeps you where you were
     keepAwake(); scheduleAsk();
   }
 
@@ -166,7 +181,7 @@
     document.querySelectorAll('nav button').forEach((x) => { x.classList.toggle('on', x === b); x.setAttribute('aria-selected', String(x === b)); });
     $('mapView').style.display = b.dataset.v === 'map' ? 'block' : 'none';
     $('statsView').style.display = b.dataset.v === 'stats' ? 'block' : 'none';
-    if (b.dataset.v === 'map') map.invalidateSize();
+    if (b.dataset.v === 'map') { map.invalidateSize(); if (scenes.items.length) seek(frac); }   // re-frame the camera: it was sized while hidden
   }));
 
   // ---- Map & replay ----
@@ -239,14 +254,15 @@
 
   // ---- Keep the screen on while the app is open ----
   async function keepAwake() {
+    if (NATIVE) { try { NATIVE.keepScreenOn(!!keepOn); } catch (e) {} wakeInfo(); return; }
     if (!keepOn || wake || !('wakeLock' in navigator) || document.visibilityState !== 'visible') return;
     try { wake = await navigator.wakeLock.request('screen'); wake.addEventListener('release', () => { wake = null; wakeInfo(); }); } catch (e) { wake = null; }
     wakeInfo();
   }
-  function releaseAwake() { if (wake) { try { wake.release(); } catch (e) {} wake = null; } wakeInfo(); }
+  function releaseAwake() { if (NATIVE) { try { NATIVE.keepScreenOn(false); } catch (e) {} wakeInfo(); return; } if (wake) { try { wake.release(); } catch (e) {} wake = null; } wakeInfo(); }
   function wakeInfo() {
     const el = $('awakeNote'); if (!el) return;
-    el.textContent = !('wakeLock' in navigator) ? 'Not supported by this browser.' : !keepOn ? 'Off. The screen may dim.' : wake ? 'Active. The screen will not dim.' : 'On. Active while this page is visible.';
+    el.textContent = NATIVE ? (keepOn ? 'Active. The screen will not dim while the app is open.' : 'Off. The screen may dim.') : !('wakeLock' in navigator) ? 'Not supported by this browser.' : !keepOn ? 'Off. The screen may dim.' : wake ? 'Active. The screen will not dim.' : 'On. Active while this page is visible.';
   }
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && data) keepAwake(); });
   document.addEventListener('pointerdown', () => { if (data) keepAwake(); }, { passive: true });   // some browsers only grant it after a touch
@@ -603,6 +619,62 @@
     }, 2400);
   }
 
+  // ---- Recording (Android app) ----
+  const APK_URL = 'https://github.com/michaelkashi100/Personal-stuff/releases/download/android-latest/timeline.apk';
+  function recState(st) {
+    if (!st.recording) return { key: 'off', label: 'Off', text: 'Recording is off. Start it to build your timeline automatically.' };
+    if (!st.fine) return { key: 'perm', label: 'Needs location permission', text: 'Allow location access so trips can be recorded.' };
+    if (!st.bg) return { key: 'perm', label: 'Needs “Allow all the time”', text: 'Open App permissions, then Location, then choose “Allow all the time”. Without it Android stops recording when the app is closed.' };
+    if (!st.activity) return { key: 'perm', label: 'Needs physical activity', text: 'Allow “Physical activity” so recording only wakes up when you start moving. That is what keeps the battery use near zero.' };
+    return { key: 'on', label: 'Recording', text: 'Nothing runs while you are still. GPS is used only while you move.' };
+  }
+  const ago = (t) => { const m = Math.round((Date.now() - t) / 60000); return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : m < 1440 ? Math.round(m / 60) + ' h ago' : Math.round(m / 1440) + ' days ago'; };
+  function renderRecording() {
+    const el = $('recWrap'); if (!el) return;
+    if (!NATIVE) {                                            // a browser on Android: offer the app
+      el.innerHTML = /Android/i.test(navigator.userAgent) ? `<div class="card"><h2>Record automatically</h2><p class="note" style="margin-top:0">A browser cannot track you in the background. The Android app records your trips with almost no battery use and keeps everything on your phone.</p><div class="actions"><a class="btn primary" href="${APK_URL}" rel="noopener">${svg('upload')}Get the Android app</a></div></div>` : '';
+      hydrate(el); return;
+    }
+    const st = nativeStatus || nat('status') || {}, rs = recState(st);
+    const info = st.fixes > 0 ? `${Number(st.fixes).toLocaleString()} locations saved on this phone since ${new Date(st.first).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}. Last: ${ago(st.last)}.` : 'No locations recorded yet.';
+    el.innerHTML = `<div class="card"><h2>Recording</h2><div class="recstate ${rs.key}"><i></i><b>${rs.label}</b></div><p class="note">${rs.text}</p><p class="note">${info}</p><div class="actions">` +
+      (rs.key === 'on' ? '<button class="btn" id="recToggle" type="button">Pause recording</button>' : `<button class="btn primary" id="recToggle" type="button">${rs.key === 'perm' ? 'Fix permissions' : 'Start recording'}</button>`) +
+      '<button class="btn" id="recBattery" type="button">Battery settings</button></div>' +
+      '<div class="actions"><button class="btn" id="recApp" type="button">App permissions</button><button class="btn" id="recBackup" type="button">Save a backup</button></div>' +
+      '<p class="note">Choose “Unrestricted” in battery settings so Android does not stop the recorder. Locations never leave this phone.</p>' +
+      '<div class="actions"><button class="btn danger" id="recWipe" type="button"><span data-icon="trash"></span><span class="lbl">Delete recorded locations</span></button></div></div>';
+    hydrate(el);
+    $('recToggle').onclick = () => { buzz(); NATIVE.setRecording(rs.key !== 'on'); };
+    $('recBattery').onclick = () => NATIVE.openSettings('battery');
+    $('recApp').onclick = () => NATIVE.openSettings('app');
+    $('recBackup').onclick = () => { const r = nat('exportBackup'); toast(r && r.ok ? 'Saved to Downloads: ' + r.name : 'Could not save a backup' + (r && r.error ? ': ' + r.error : ''), 5000); };
+    let t = 0;
+    $('recWipe').onclick = () => {
+      const b = $('recWipe'), lbl = b.querySelector('.lbl');
+      if (!b.classList.contains('armed')) { b.classList.add('armed'); lbl.textContent = 'Tap again to confirm'; clearTimeout(t); t = setTimeout(() => { b.classList.remove('armed'); lbl.textContent = 'Delete recorded locations'; }, 3500); return; }
+      NATIVE.clearRecorded(); location.reload();                     // starts again from what is left (an imported file, or nothing)
+    };
+  }
+  async function reloadSources() {
+    if (reloadingNative) return; reloadingNative = true;
+    try {
+      const saved = await loadFiles(), srcs = (saved || []).map(savedSource);
+      if (NATIVE && nativeStatus && nativeStatus.fixes > 0) srcs.push(nativeSource());
+      if (srcs.length) await loadFromSources(srcs, false);
+    } finally { reloadingNative = false; }
+  }
+  // Called by the app when it comes to the front or the recorder's state changes.
+  function refreshNative() {
+    if (!NATIVE) return;
+    const st = nat('status'); if (!st) return;
+    const prev = nativeFixes; nativeStatus = st; nativeFixes = st.fixes;
+    renderRecording();
+    if (!data) { if (st.fixes > 0) reloadSources(); else $('status').textContent = recState(st).key === 'on' ? 'Recording is on. Your first trip appears here after you start moving.' : $('status').textContent; }
+    else if (prev >= 0 && st.fixes !== prev && !playing && $('ask').hidden) reloadSources().then(() => toast('Updated with your latest recordings', 2500));
+  }
+  window.__tlNativeChanged = refreshNative;
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshNative(); });
+
   // ---- Insights ----
   const fmtKm = (v) => (v >= 100 ? Math.round(v).toLocaleString() : v.toFixed(1)) + ' km';
   function renderStats() {
@@ -619,7 +691,7 @@
       return `<li><button class="row" type="button" data-pid="${p.id}" style="--c:${kd ? kd.color : 'var(--accent)'}"><span class="ico">${svg(kd ? kd.icon : 'pin')}</span><div class="grow"><div class="top"><b>${nm ? esc(nm) : '<i class="unnamed">Unnamed place</i>'}</b><span>${Math.round(p.hours).toLocaleString()} h</span></div><div class="sub">${p.visits} visit${p.visits > 1 ? 's' : ''}${hint}</div><div class="meter"><i style="width:${Math.max(3, (p.hours / maxH) * 100)}%"></i></div></div>${named ? `<span class="editdot">${svg('pencil')}</span>` : '<span class="pill">Name it</span>'}</button></li>`;
     }).join('');
     const sw = (id, label, on) => `<button class="switch" id="${id}" role="switch" aria-checked="${on}" aria-label="${label}" type="button"><span></span></button>`;
-    el.innerHTML = `<div class="page">` +
+    el.innerHTML = `<div class="page"><div id="recWrap"></div>` +
       `<div class="card hero-card"><h2>${year ?? 'All time'} in review</h2><div class="big num">${Math.round(s.totalKm).toLocaleString()}<small>km travelled</small></div><p>Across ${s.visitCount.toLocaleString()} stops and ${s.uniquePlaces.toLocaleString()} different places.</p></div>` +
       `<div class="tiles"><div class="tile"><b>${s.activeDays.toLocaleString()}</b><span>active days</span></div><div class="tile"><b>${s.uniquePlaces.toLocaleString()}</b><span>different places</span></div>` +
       (s.longest ? `<div class="tile"><b>${fmtKm(s.longest.dist / 1000).replace(' km', '')}<small style="font-size:13px;color:var(--text-2);font-weight:600"> km</small></b><span>longest ${MODE_NAME[s.longest.mode].toLowerCase()} leg</span></div>` : '') + `</div>` +
@@ -643,22 +715,28 @@
       if (!b.classList.contains('armed')) { b.classList.add('armed'); lbl.textContent = 'Tap again to confirm'; clearTimeout(armedT); armedT = setTimeout(() => { b.classList.remove('armed'); lbl.textContent = 'Forget my data'; }, 3500); return; }
       await clearFiles(); try { localStorage.removeItem('tl-places'); localStorage.removeItem('tl-ask-snooze'); } catch (e) {} location.reload();
     };
-    wakeInfo(); dataInfo();
+    renderRecording(); wakeInfo(); dataInfo();
   }
 
-  // Open the saved copy automatically; show the picker only when there is none (or it can't be read).
+  // Open the saved copy (and, in the Android app, the recorded locations) automatically; show the picker only when there is nothing.
   hydrate(document); setPlayUi();
+  if (NATIVE) {
+    $('startRec').hidden = false; $('pick').classList.remove('primary'); $('pick').lastChild.textContent = 'Import a Google Timeline file';
+    document.querySelector('#import .lead').textContent = 'Records your days on this phone with almost no battery use. Everything stays here.';
+    $('startRec').onclick = () => { buzz(); NATIVE.setRecording(true); $('status').textContent = 'Allow location “all the time” when Android asks, then physical activity.'; };
+    nativeStatus = nat('status'); nativeFixes = nativeStatus ? nativeStatus.fixes : 0;
+  }
   $('import').style.visibility = 'hidden';
   loadFiles().then((saved) => {
     $('import').style.visibility = 'visible';
-    if (saved && saved.length) {
-      setLoading(true, 'Loading your saved timeline…');
-      return loadFromSources(saved.map((e) => ({ name: e.name, text: () => (e.text != null ? Promise.resolve(e.text) : e.blob.text()) })), false);
-    }
+    const srcs = (saved || []).map(savedSource);
+    if (NATIVE && nativeStatus && nativeStatus.fixes > 0) srcs.push(nativeSource());
+    if (srcs.length) { setLoading(true, 'Loading your timeline…'); return loadFromSources(srcs, false); }
+    if (NATIVE && nativeStatus && recState(nativeStatus).key === 'on') $('status').textContent = 'Recording is on. Your first trip appears here after you start moving.';
   }).catch(() => { $('import').style.visibility = 'visible'; });
 
   // New versions apply by themselves. Reloading is safe now: the saved copy reopens straight away, and the viewed day is restored.
-  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+  if (!NATIVE && 'serviceWorker' in navigator && location.protocol.startsWith('http')) {
     const hadController = !!navigator.serviceWorker.controller;
     let reloading = false;
     navigator.serviceWorker.addEventListener('controllerchange', () => {
