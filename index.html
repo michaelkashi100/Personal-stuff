@@ -49,6 +49,10 @@
   .leaflet-control-attribution { background:rgba(15,23,42,.7)!important; color:var(--mute)!important; }
   .leaflet-control-attribution a { color:var(--mute)!important; }
   /* car: faces the direction of travel; ring pulses while parked */
+  .live .dot { position:absolute; left:6px; top:6px; width:18px; height:18px; box-sizing:border-box; border-radius:50%; background:#38bdf8; border:3px solid #fff; box-shadow:0 0 14px rgba(56,189,248,.85); }
+  .live.drive .dot { display:none; }
+  .live .carwrap { display:none; }
+  .live.drive .carwrap { display:block; }
   .live .carwrap { position:absolute; left:0; top:-12.5px; width:30px; height:55px; filter:drop-shadow(0 2px 4px rgba(0,0,0,.55)); }
   .live .carwrap svg { display:block; }
   .live .ring { position:absolute; left:-8px; top:-8px; width:46px; height:46px; border-radius:50%; border:2px solid #38bdf8; opacity:0; }
@@ -59,7 +63,7 @@
     background:rgba(15,23,42,.72); -webkit-backdrop-filter:blur(8px); backdrop-filter:blur(8px); border:1px solid rgba(148,163,184,.18); }
   #hudTime { font-size:1.7rem; font-weight:700; line-height:1.1; font-variant-numeric:tabular-nums; }
   #hudSub { font-size:.82rem; color:var(--acc); margin-top:2px; }
-  #toast { display:none; position:fixed; left:50%; transform:translateX(-50%); top:64px; z-index:3000; max-width:90%; padding:10px 16px; border-radius:12px;
+  #toast { display:none; position:fixed; left:50%; transform:translateX(-50%); bottom:166px; z-index:3000; max-width:90%; padding:10px 16px; border-radius:12px;
     background:rgba(15,23,42,.95); border:1px solid rgba(148,163,184,.3); color:var(--fg); font-size:.9rem; text-align:center; }
 </style>
 </head>
@@ -71,7 +75,7 @@
   <button class="btn" id="pick">Choose file</button>
   <input type="file" id="file" accept=".json,application/json" hidden multiple>
   <p id="status"></p>
-  <p style="font-size:.75rem;opacity:.6">build 9 (reliable save)</p>
+  <p style="font-size:.75rem;opacity:.6">build 10 (drive detection)</p>
 </section>
 
 <section id="app">

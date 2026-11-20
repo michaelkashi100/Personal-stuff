@@ -10,7 +10,7 @@ const { chromium } = require('playwright');
     const out = []; const m = document.getElementById('map').getBoundingClientRect();
     for (let f = 0; f <= 1.0001; f += 0.005) {
       const r = document.getElementById('scrub'); r.value = Math.round(Math.min(f, 1) * 100000); r.dispatchEvent(new Event('input'));
-      const c = document.querySelector('.live .carwrap').getBoundingClientRect();
+      const c = document.querySelector('.live').getBoundingClientRect();
       out.push({ f, z: window.__tl().zoom, dx: c.x + c.width / 2 - (m.x + m.width / 2), dy: c.y + c.height / 2 - (m.y + m.height / 2) });
     }
     return { out, w: m.width, h: m.height };

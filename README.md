@@ -9,3 +9,5 @@ Static, offline-capable web app for exploring a Google Timeline export. Open `in
 - `test/make-sample.js` – generates a synthetic sample; `test/e2e.js` – Playwright check
 
 The chosen file is kept as a private copy in the browser's IndexedDB on the device (never uploaded), so the app opens straight into it on later visits. Use *Stats → Change file* / *Forget my data* to replace or remove it.
+
+The replay ignores GPS wobble (tiny moves around one spot are merged into the stay) and guesses the travel mode from the activity label and speed; the car icon is shown only while driving.
