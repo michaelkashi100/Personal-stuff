@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f172a">
+<title>My Timeline</title>
+<link rel="manifest" href="manifest.json">
+<link rel="stylesheet" href="lib/leaflet.css">
+<style>
+  :root { --bg:#0f172a; --card:#1e293b; --fg:#e2e8f0; --mute:#94a3b8; --acc:#38bdf8; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg); font:16px system-ui,sans-serif; }
+  #import { display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; padding:24px; text-align:center; gap:14px; }
+  #import h1 { margin:0; }
+  #import p { color:var(--mute); max-width:30em; margin:0; }
+  .btn { background:var(--acc); color:#04283a; border:0; border-radius:12px; padding:14px 22px; font-size:1rem; font-weight:600; }
+  #app { display:none; height:100%; flex-direction:column; }
+  nav { display:flex; background:var(--card); padding-top:env(safe-area-inset-top); }
+  nav button { flex:1; background:none; border:0; color:var(--mute); padding:14px 4px; font-size:.95rem; }
+  nav button.on { color:var(--acc); border-bottom:2px solid var(--acc); }
+  main { flex:1; position:relative; min-height:0; }
+  #mapView,#statsView { position:absolute; inset:0; }
+  #statsView { overflow:auto; padding:16px; display:none; }
+  #map { position:absolute; inset:0 0 120px 0; }
+  #controls { position:absolute; left:0; right:0; bottom:0; height:120px; background:var(--card); padding:10px 14px calc(10px + env(safe-area-inset-bottom)); display:flex; flex-direction:column; gap:8px; }
+  #controls .row { display:flex; gap:8px; align-items:center; }
+  #controls input[type=range] { flex:1; }
+  select,#controls button { background:#334155; color:var(--fg); border:0; border-radius:8px; padding:8px 12px; font-size:.95rem; }
+  #dayLabel { color:var(--mute); font-size:.9rem; }
+  .card { background:var(--card); border-radius:16px; padding:18px; margin-bottom:14px; }
+  .card .big { font-size:2.2rem; font-weight:700; color:var(--acc); }
+  .card .lbl { color:var(--mute); font-size:.9rem; }
+  ul { padding-left:1.1em; margin:.4em 0 0; }
+</style>
+</head>
+<body>
+<section id="import">
+  <h1>📍 My Timeline</h1>
+  <p>Pick your Google Timeline export (<code>Timeline.json</code>, <code>Records.json</code> or a Semantic&nbsp;Location&nbsp;History month). It is read on this device only and never uploaded.</p>
+  <button class="btn" id="pick">Choose file</button>
+  <input type="file" id="file" accept=".json,application/json" hidden multiple>
+  <p id="status"></p>
+</section>
+
+<section id="app">
+  <nav><button data-v="map" class="on">🗺 Map &amp; Replay</button><button data-v="stats">📊 Stats</button></nav>
+  <main>
+    <div id="mapView">
+      <div id="map"></div>
+      <div id="controls">
+        <div class="row">
+          <select id="day"></select>
+          <button id="play">▶ Play</button>
+          <select id="speed"><option value="1">1×</option><option value="4" selected>4×</option><option value="16">16×</option></select>
+        </div>
+        <div class="row"><input type="range" id="scrub" min="0" max="1000" value="0"><span id="dayLabel"></span></div>
+      </div>
+    </div>
+    <div id="statsView"></div>
+  </main>
+</section>
+
+<script src="lib/leaflet.js"></script>
+<script src="parser.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
