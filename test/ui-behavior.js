@@ -44,6 +44,12 @@ const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) process
   ok(day2 > day, 'and again to the day after (never back to a day already shown)');
   await p.click('#play');
 
+  // touching the map while it plays does not stop the replay; the map is locked until it is paused
+  await p.selectOption('#day', { index: 0 }); await p.click('#play'); await p.waitForTimeout(300);
+  let box = await p.locator('#map').boundingBox(); await p.mouse.click(box.x + box.width / 2, box.y + box.height / 2); await p.mouse.move(box.x + 100, box.y + 100); await p.mouse.down(); await p.mouse.move(box.x + 200, box.y + 200, { steps: 5 }); await p.mouse.up(); await p.waitForTimeout(300);
+  h = await hook(); ok(h.playing && !h.dragging, 'tapping and dragging the map while playing keeps the replay going and the map locked');
+  await p.click('#play'); h = await hook(); ok(!h.playing && h.dragging, 'pausing unlocks the map for panning and zooming');
+
   // last day: plays once, then stops with a message instead of repeating
   await p.selectOption('#day', { index: n - 1 }); h = await hook(); const last = h.day;
   await p.click('#play'); const t2 = Date.now();
@@ -59,6 +65,12 @@ const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) process
   ok((await p.getAttribute('#forget', 'class')).includes('armed') && /confirm/.test(await p.textContent('#forget')), 'forget needs a second tap to confirm');
   await p.reload(); await p.waitForSelector('#app', { state: 'visible' });
   ok(true, 'a single tap on forget did not remove the data');
+  // an open page updates itself when a new version takes over
+  const loads = []; p.on('framenavigated', (f) => { if (f === p.mainFrame()) loads.push(f.url()); });
+  await p.evaluate(() => navigator.serviceWorker.ready); await p.reload(); await p.waitForSelector('#app', { state: 'visible' }); loads.length = 0;
+  await p.evaluate(() => navigator.serviceWorker.dispatchEvent(new Event('controllerchange'))); await p.waitForTimeout(1500);
+  ok(loads.length >= 1, 'a new service worker taking over reloads the open page');
+  await p.waitForSelector('#app', { state: 'visible' }); ok(true, 'and it reopens straight into your data');
   ok(errs.length === 0, 'no page errors ' + JSON.stringify(errs));
   await b.close();
 })();

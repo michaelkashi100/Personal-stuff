@@ -162,7 +162,6 @@
   // ---- Map & replay ----
   function initMap() {
     map = L.map('map', { zoomControl: false, zoomSnap: 0 });
-    map.getContainer().addEventListener('pointerdown', () => stop());   // touching the map pauses the replay
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
     dayLayer = L.layerGroup().addTo(map);
     // Background: the cleaned places and routes (not the raw, noisy fixes), drawn on a canvas and capped at ~3k points.
@@ -204,7 +203,8 @@
     const multiYear = new Set(dayList.map((d) => new Date(d).getFullYear())).size > 1, optLabel = (d) => dayLabel(d, multiYear ? undefined : { weekday: 'short', day: 'numeric', month: 'short' });
     $('day').innerHTML = dayList.map((d) => `<option value="${d}">${optLabel(d)}${nTrips(d) ? ' · ' + nTrips(d) + (nTrips(d) > 1 ? ' trips' : ' trip') : ''}</option>`).join('');
     $('day').onchange = () => { const was = playing; showDay(+$('day').value); if (was) startPlay(); };
-    if (dayList.length) showDay(dayList[dayList.length - 1]);
+    let was = NaN; try { was = Number(sessionStorage.getItem('tl-day')); } catch (e) {}
+    if (dayList.length) showDay(dayList.includes(was) ? was : dayList[dayList.length - 1]);
   }
   // Move to another day (the next one when a day finishes) and optionally keep playing.
   function goDay(delta, play) {
@@ -352,6 +352,7 @@
 
   function showDay(d) {
     stop(); map.invalidateSize(); dayLayer.clearLayers(); hudKey = ''; trailColor = ''; heading = 0; badgeMode = ''; litKey = null; curDay = d;
+    try { sessionStorage.setItem('tl-day', String(d)); } catch (e) {}
     $('day').value = String(d);
     $('hudDay').textContent = dayLabel(d, { weekday: 'short', day: 'numeric', month: 'short' });
     const idx = dayList.indexOf(d); $('prevDay').disabled = idx <= 0; $('nextDay').disabled = idx < 0 || idx >= dayList.length - 1;
@@ -430,10 +431,13 @@
   // ---- Playback ----
   $('scrub').oninput = () => seek($('scrub').value / 100000);
   function setPlayUi() { const b = $('play'); b.innerHTML = svg(playing ? 'pause' : 'play', 'fill'); b.setAttribute('aria-label', playing ? 'Pause' : 'Play'); }
-  function stop() { playing = false; cancelAnimationFrame(raf); setPlayUi(); }
+  // While the replay plays the camera is driven by the animation, so the map ignores touches and the replay keeps going.
+  // Pause it and the map is free to pan and zoom again.
+  function lockMap(on) { if (!map) return; for (const h of ['dragging', 'touchZoom', 'doubleClickZoom', 'scrollWheelZoom', 'boxZoom', 'keyboard', 'tapHold']) if (map[h]) map[h][on ? 'disable' : 'enable'](); }
+  function stop() { playing = false; cancelAnimationFrame(raf); setPlayUi(); lockMap(false); }
   function startPlay() {
     if (!scenes.items.length) return;
-    playing = true; setPlayUi(); lastTs = performance.now(); cancelAnimationFrame(raf); raf = requestAnimationFrame(tick); keepAwake();
+    playing = true; setPlayUi(); lockMap(true); lastTs = performance.now(); cancelAnimationFrame(raf); raf = requestAnimationFrame(tick); keepAwake();
   }
   function tick(ts) {
     if (!playing) return;
@@ -454,7 +458,7 @@
     if (frac >= 1) frac = 0;
     startPlay();
   };
-  window.__tl = () => { const el = marker && marker.getElement(), cur = scenes.items.length ? locate(frac * scenes.V).s : null; return { zoom: map.getZoom(), heading, frac, V: scenes.V, items: scenes.items.map((s) => (s.kind === 'move' ? s.mode : 'stay')), cur: cur ? (cur.kind === 'move' ? cur.mode : 'stay') : null, car: !!(el && el.classList.contains('drive')), timeline: timeline.length, day: curDay, playing }; };   // test hook (read-only)
+  window.__tl = () => { const el = marker && marker.getElement(), cur = scenes.items.length ? locate(frac * scenes.V).s : null; return { zoom: map.getZoom(), heading, frac, V: scenes.V, items: scenes.items.map((s) => (s.kind === 'move' ? s.mode : 'stay')), cur: cur ? (cur.kind === 'move' ? cur.mode : 'stay') : null, car: !!(el && el.classList.contains('drive')), timeline: timeline.length, day: curDay, playing, dragging: !!(map && map.dragging.enabled()) }; };   // test hook (read-only)
 
   async function dataInfo() {
     const el = $('dinfo'); if (!el) return;
@@ -512,9 +516,18 @@
     }
   }).catch(() => { $('import').style.visibility = 'visible'; });
 
+  // New versions apply by themselves. Reloading is safe now: the saved copy reopens straight away, and the viewed day is restored.
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     const hadController = !!navigator.serviceWorker.controller;
-    navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !data) location.reload(); });
-    navigator.serviceWorker.register('sw.js').then((reg) => reg.update()).catch(() => {});
+    let reloading = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController || reloading) return;
+      reloading = true; if (data) toast('Updating to the latest version…', 1500);
+      setTimeout(() => location.reload(), data ? 500 : 0);
+    });
+    navigator.serviceWorker.register('sw.js').then((reg) => {
+      reg.update();
+      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });   // coming back to an old tab checks for a new version
+    }).catch(() => {});
   }
 })();
