@@ -50,7 +50,9 @@
   .leaflet-control-attribution a { color:var(--mute)!important; }
   /* car: faces the direction of travel; ring pulses while parked */
   .live .dot { position:absolute; left:6px; top:6px; width:18px; height:18px; box-sizing:border-box; border-radius:50%; background:#38bdf8; border:3px solid #fff; box-shadow:0 0 14px rgba(56,189,248,.85); }
-  .live.drive .dot { display:none; }
+  .live.drive .dot, .live.badge-on .dot { display:none; }
+  .live .badge { display:none; position:absolute; left:-3px; top:-3px; width:36px; height:36px; border-radius:50%; background:#0b1220; border:2px solid #38bdf8; box-shadow:0 0 14px rgba(56,189,248,.7); font-size:19px; line-height:32px; text-align:center; }
+  .live.badge-on .badge { display:block; }
   .live .carwrap { display:none; }
   .live.drive .carwrap { display:block; }
   .live .carwrap { position:absolute; left:0; top:-12.5px; width:30px; height:55px; filter:drop-shadow(0 2px 4px rgba(0,0,0,.55)); }
@@ -75,7 +77,7 @@
   <button class="btn" id="pick">Choose file</button>
   <input type="file" id="file" accept=".json,application/json" hidden multiple>
   <p id="status"></p>
-  <p style="font-size:.75rem;opacity:.6">build 10 (drive detection)</p>
+  <p style="font-size:.75rem;opacity:.6">build 11 (smart analysis)</p>
 </section>
 
 <section id="app">
@@ -100,6 +102,7 @@
 
 <script src="lib/leaflet.js"></script>
 <script src="parser.js"></script>
+<script src="analyze.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

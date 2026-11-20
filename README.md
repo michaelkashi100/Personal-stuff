@@ -11,3 +11,6 @@ Static, offline-capable web app for exploring a Google Timeline export. Open `in
 The chosen file is kept as a private copy in the browser's IndexedDB on the device (never uploaded), so the app opens straight into it on later visits. Use *Stats → Change file* / *Forget my data* to replace or remove it.
 
 The replay ignores GPS wobble (tiny moves around one spot are merged into the stay) and guesses the travel mode from the activity label and speed; the car icon is shown only while driving.
+
+### How the data is understood
+`analyze.js` turns the raw fixes into stays and legs (see the header comment): noise-adaptive stay detection, a Viterbi pass over windowed speed statistics to tell walking, running, cycling, driving, transit and flights apart, and Google's own activity hints as a prior. `test/analyze-eval.js` measures it against simulated days with known ground truth (`node test/analyze-eval.js -v`).
