@@ -1,0 +1,67 @@
+name: Build Android app
+
+on:
+  push:
+    branches: [main, 'ccr-*']
+    paths: ['android/**', 'index.html', 'app.js', 'parser.js', 'analyze.js', 'manifest.json', 'lib/**', 'icons/**', '.github/workflows/android.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Bundle the web app into the APK
+        run: |
+          mkdir -p android/app/src/main/assets/www
+          tar --exclude=./.git --exclude=./.github --exclude=./test --exclude=./android --exclude=./README.md --exclude=./_site --exclude=./node_modules -cf - . | (cd android/app/src/main/assets/www && tar -xf -)
+          rm -f android/app/src/main/assets/www/sw.js   # the app updates through new APKs, not a service worker
+          echo "Bundled files:"; find android/app/src/main/assets/www -type f | sort
+          test -f android/app/src/main/assets/www/analyze.js
+
+      - name: Kotlin unit tests (also compiles the app)
+        working-directory: android
+        run: gradle testDebugUnitTest --no-daemon --stacktrace
+
+      - name: The web app understands what the recorder exports
+        run: node android/verify-export.js android/app/build/tmp/export-sample.json
+
+      - name: Build the APK
+        working-directory: android
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: Keep the APK
+        run: cp android/app/build/outputs/apk/release/app-release.apk timeline.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: timeline-apk
+          path: timeline.apk
+
+      - name: Publish the download (main only)
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete android-latest --cleanup-tag --yes || true
+          gh release create android-latest timeline.apk \
+            --title "Timeline for Android (build ${{ github.run_number }})" \
+            --notes "Install: open this page on your phone, download timeline.apk, open it and allow installing from this source. Then open Timeline and tap Start recording." \
+            --target "${{ github.sha }}"
