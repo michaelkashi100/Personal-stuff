@@ -13,7 +13,7 @@
         } catch (e) {}
         location.reload();
       })();
-    } else $('status').textContent = 'The app was updated. Close this tab and open the site again.';
+    } else $('status').textContent = 'Some app files did not load. Wait a minute, then close this tab and open the site again.';
     return;
   }
   try { sessionStorage.removeItem('tl-refresh'); } catch (e) {}

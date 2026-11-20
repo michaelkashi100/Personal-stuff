@@ -20,9 +20,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: Stage site files
         run: |
+          # publish every app file; only development files are left out (so new files are never forgotten)
           mkdir _site
-          cp index.html app.js parser.js sw.js manifest.json _site/
-          cp -r lib _site/
+          tar --exclude=./.git --exclude=./.github --exclude=./test --exclude=./README.md --exclude=./_site -cf - . | (cd _site && tar -xf -)
+          echo "Published files:"; find _site -type f | sort
+          test -f _site/analyze.js && test -f _site/icons/icon-192.png
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
