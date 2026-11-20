@@ -17,7 +17,7 @@
     return;
   }
   try { sessionStorage.removeItem('tl-refresh'); } catch (e) {}
-  let data = null, timeline = [], map, dayLayer, marker;
+  let data = null, timeline = [], places = [], map, dayLayer, marker;
   const DAY = 86400000;
   const MODE_COLOR = { drive: '#f87171', walk: '#4ade80', run: '#a3e635', bike: '#fbbf24', transit: '#a78bfa', flight: '#fb923c', other: '#94a3b8' };
   const MODE_NAME = { drive: 'Driving', walk: 'Walking', run: 'Running', bike: 'Cycling', transit: 'Transit', flight: 'Flying', other: 'Moving' };
@@ -44,6 +44,16 @@
     upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/>',
     shield: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/>',
     refresh: '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
+    home: '<path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>',
+    briefcase: '<rect width="20" height="14" x="2" y="7" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>',
+    school: '<path d="M21.42 10.92a1 1 0 0 0-.02-1.84L12.83 5.18a2 2 0 0 0-1.66 0L2.6 9.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0z"/><path d="M22 10v6"/><path d="M6 12.5V16a6 3 0 0 0 12 0v-3.5"/>',
+    gym: '<path d="M6.5 6.5v11"/><path d="M17.5 6.5v11"/><path d="M3.5 9v6"/><path d="M20.5 9v6"/><path d="M6.5 12h11"/>',
+    users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+    bag: '<path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/>',
+    food: '<path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"/><path d="M7 2v20"/><path d="M21 15V2a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/>',
+    star: '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>',
+    pencil: '<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/>',
+    check: '<polyline points="20 6 9 17 4 12"/>',
     trash: '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/>',
   };
   const svg = (name, cls) => '<svg class="ic' + (cls ? ' ' + cls : '') + '" viewBox="0 0 24 24" aria-hidden="true">' + (ICON[name] || '') + '</svg>';
@@ -142,12 +152,12 @@
   function start(d) {
     d.visits.sort((a, b) => a.start - b.start); d.trips.sort((a, b) => a.start - b.start);
     if (map) { stop(); map.remove(); map = null; }           // "Change file" while the app is open
-    data = d; timeline = TL.analyze(d);
+    data = d; timeline = TL.analyze(d); places = TL.clusterPlaces(timeline);
     $('import').style.display = 'none';
     $('app').style.display = 'flex';
     initMap(); initDays(); renderStats();
     document.querySelector('nav button').click();
-    keepAwake();
+    keepAwake(); scheduleAsk();
   }
 
   // ---- Tabs ----
@@ -292,7 +302,7 @@
       if (it.t0 >= end) break;
       if (it.kind === 'stay') {
         const t0 = Math.max(it.t0, d), t1 = Math.min(it.t1, end);
-        if (t1 - t0 >= MIN_STAY) raw.push({ kind: 'stay', t0, t1, lat: it.lat, lng: it.lng, name: it.name, nd: it.nd });
+        if (t1 - t0 >= MIN_STAY) raw.push({ kind: 'stay', t0, t1, lat: it.lat, lng: it.lng, name: stayName(it), place: it.place, nd: it.nd });
       } else if (it.t0 >= d) raw.push(moveScene(it));          // a leg belongs to the day it starts
     }
     // Consecutive legs form one trip: one camera move and one slow-fast-slow speed profile, whatever the modes.
@@ -351,7 +361,7 @@
     '<rect x="5.5" y="3.5" width="3.5" height="2" rx="1" fill="#fde68a"/><rect x="15" y="3.5" width="3.5" height="2" rx="1" fill="#fde68a"/></svg></div>';
 
   function showDay(d) {
-    stop(); map.invalidateSize(); dayLayer.clearLayers(); hudKey = ''; trailColor = ''; heading = 0; badgeMode = ''; litKey = null; curDay = d;
+    stop(); map.invalidateSize(); dayLayer.clearLayers(); hudKey = ''; trailColor = ''; heading = 0; badgeMode = ''; litKey = null; curDay = d; hudPlace = null;
     try { sessionStorage.setItem('tl-day', String(d)); } catch (e) {}
     $('day').value = String(d);
     $('hudDay').textContent = dayLabel(d, { weekday: 'short', day: 'numeric', month: 'short' });
@@ -417,6 +427,7 @@
     const mode = s.kind === 'move' ? s.mode : '', el = marker.getElement();
     if (el) { el.classList.toggle('stay', s.kind === 'stay'); el.classList.toggle('drive', mode === 'drive'); el.classList.toggle('badge-on', !!mode && mode !== 'drive' && mode !== 'other'); }
     if (mode !== badgeMode) { badgeMode = mode; if (badgeEl) { badgeEl.innerHTML = mode ? svg(MODE_ICON[mode]) : ''; badgeEl.style.setProperty('--c', MODE_COLOR[mode] || 'var(--accent)'); } }
+    updateHudEdit(s);
     const sub = s.kind === 'stay' ? s.name + ' · ' + fmtDur((s.t1 - s.t0) * f)
       : s.uncertain ? 'Travelled · no data in between' : MODE_NAME[mode] + ' · ' + Math.round(s.med * 3.6) + ' km/h · ' + (left / 1000).toFixed(1) + ' km left';
     setHud(clock(t), sub, s.kind === 'stay' ? 'pin' : MODE_ICON[mode], s.kind === 'stay' ? 'var(--accent)' : MODE_COLOR[mode]);
@@ -467,6 +478,131 @@
     el.textContent = t;
   }
 
+  // ---- Places: the names you give them ----
+  const KINDS = [
+    { id: 'home', label: 'Home', icon: 'home', color: '#5cbcf6' }, { id: 'work', label: 'Work', icon: 'briefcase', color: '#fbbf24' },
+    { id: 'school', label: 'School', icon: 'school', color: '#a78bfa' }, { id: 'gym', label: 'Gym', icon: 'gym', color: '#4ade80' },
+    { id: 'people', label: 'Family & friends', icon: 'users', color: '#fb7185' }, { id: 'shop', label: 'Shopping', icon: 'bag', color: '#fb923c' },
+    { id: 'food', label: 'Food & drink', icon: 'food', color: '#f87171' }, { id: 'other', label: 'Other', icon: 'star', color: '#94a3b8' },
+  ];
+  const kindById = Object.fromEntries(KINDS.map((k) => [k.id, k]));
+  let labels = []; try { const v = JSON.parse(localStorage.getItem('tl-places') || '[]'); if (Array.isArray(v)) labels = v; } catch (e) {}
+  const saveLabels = () => { try { localStorage.setItem('tl-places', JSON.stringify(labels)); } catch (e) {} };
+  const labelFor = (p) => { let best = null, bd = 150; for (const l of labels) { const d = TL.haversine([p.lat, p.lng], [l.lat, l.lng]); if (d < bd) { bd = d; best = l; } } return best; };
+  const labelName = (p) => { const l = p && labelFor(p); return l && !l.skip && l.name ? l.name : ''; };
+  const googleKind = (t) => ({ HOME: 'home', WORK: 'work', GYM: 'gym', SCHOOL: 'school', UNIVERSITY: 'school' })[String(t || '').toUpperCase()] || null;
+  const stayName = (s) => labelName(s.place) || (!s.name || s.name === 'Stopped' ? 'Unnamed place' : s.name);
+  const placeKind = (p) => { const l = labelFor(p); return kindById[(l && !l.skip && l.kind) || p.guess || googleKind(p.googleType)] || null; };
+  const placeLabelText = (p) => labelName(p) || p.googleName || (googleKind(p.googleType) ? kindById[googleKind(p.googleType)].label : '');
+  const askSnoozed = () => { try { return Number(localStorage.getItem('tl-ask-snooze') || 0) > Date.now(); } catch (e) { return false; } };
+  const isPending = (p) => !labelFor(p) && !p.googleName && (p.visits >= 3 || p.hours >= 6);   // the places that matter, not yet named
+  const pendingPlaces = () => places.filter(isPending).sort((a, b) => (b.guess ? 1 : 0) - (a.guess ? 1 : 0) || b.hours - a.hours);
+  function whenText(p) {
+    const tot = p.nightH + p.dayH + p.eveH || 1;
+    if (p.nightH / tot > 0.5) return 'mostly overnight';
+    if (p.dayH / tot > 0.6) return 'mostly during the day';
+    if (p.eveH / tot > 0.5) return 'mostly in the evening';
+    let hr = 0; p.startHours.forEach((v, i) => { if (v > p.startHours[hr]) hr = i; });
+    return 'usually around ' + String(hr).padStart(2, '0') + ':00';
+  }
+  const ctxText = (p) => p.visits + (p.visits > 1 ? ' visits' : ' visit') + ' · ' + Math.round(p.hours) + ' h in total · ' + whenText(p);
+  // The question to ask about a place: a yes/no when we have a good guess, an open question otherwise.
+  function questionFor(p) {
+    const k = p.guess || googleKind(p.googleType);
+    if (!k) return null;
+    const titles = { home: 'Is this your home?', work: 'Is this where you work?', school: 'Is this where you study?', gym: 'Is this your gym?' };
+    const why = p.guess === 'home' ? "You're here most nights." : p.guess === 'work' ? "You're here on most days." : 'Google marked this place as ' + kindById[k].label.toLowerCase() + '.';
+    return { kind: k, title: titles[k] || 'Is this “' + kindById[k].label + '”?', why };
+  }
+
+  let askPlace = null, askQueue = [], askIdx = 0, askStage = '', askKind = null, askMarker = null, prevTab = 'map', askedOnce = false, hudPlace = null;
+  function focusPlace() {                                      // show the place on the map, in the part the sheet does not cover
+    if (askMarker) { askMarker.remove(); askMarker = null; }
+    if (!map || !askPlace) return;
+    map.invalidateSize();
+    const p = askPlace, c = map.unproject(map.project([p.lat, p.lng], 16).add(L.point(0, Math.min(150, map.getSize().y * 0.2))), 16);
+    map.setView(c, 16, { animate: false });
+    askMarker = L.circleMarker([p.lat, p.lng], { radius: 16, color: '#5cbcf6', weight: 3, fillColor: '#5cbcf6', fillOpacity: 0.22, interactive: false }).addTo(map);
+  }
+  function openAsk(list, idx) {
+    if (!list || !list.length) return;
+    stop(); askQueue = list; askIdx = idx || 0; askPlace = list[askIdx];
+    const on = document.querySelector('nav button.on'); prevTab = on ? on.dataset.v : 'map';
+    if (prevTab !== 'map') document.querySelector('nav button[data-v=map]').click();
+    askStage = labelFor(askPlace) || !questionFor(askPlace) ? 'choose' : 'confirm';
+    const l = labelFor(askPlace); askKind = l && l.kind ? l.kind : null;
+    focusPlace(); renderAsk(); $('ask').hidden = false;
+  }
+  function closeAsk() {
+    $('ask').hidden = true; askPlace = null;
+    if (askMarker) { askMarker.remove(); askMarker = null; }
+    if (prevTab !== 'map') { const b = document.querySelector('nav button[data-v=' + prevTab + ']'); if (b) b.click(); }
+  }
+  function nextAsk() {
+    if (askIdx + 1 < askQueue.length) { askIdx++; askPlace = askQueue[askIdx]; const q = questionFor(askPlace); askStage = q ? 'confirm' : 'choose'; askKind = null; focusPlace(); renderAsk(); }
+    else closeAsk();
+  }
+  function refreshDay() { const fr = frac; showDay(curDay); $('scrub').value = Math.round(fr * 100000); seek(fr); }
+  function saveLabel(p, name, kind, skip) {
+    const l = labelFor(p);
+    if (l) Object.assign(l, { name, kind, skip: !!skip }); else labels.push({ lat: p.lat, lng: p.lng, name, kind, skip: !!skip });
+    saveLabels(); refreshDay(); renderStats();
+  }
+  function renderAsk() {
+    const p = askPlace, card = $('ask').querySelector('.card'), l = labelFor(p), q = questionFor(p), ctx = ctxText(p);
+    const prog = askQueue.length > 1 ? '<div class="progress">Question ' + (askIdx + 1) + ' of ' + askQueue.length + '</div>' : '';
+    const foot = '<div class="askfoot"><button class="ghost" id="askLater" type="button">' + (l ? 'Cancel' : 'Not now') + '</button>' +
+      (l ? '<button class="ghost danger" id="askRemove" type="button">Remove name</button>' : '<button class="ghost" id="askNever" type="button">Don’t ask about this place</button>') + '</div>';
+    if (askStage === 'confirm') {
+      const kd = kindById[q.kind];
+      card.innerHTML = '<div class="grab"></div>' + prog + '<div class="askhead"><span class="askicon" style="--c:' + kd.color + '">' + svg(kd.icon) + '</span><div><h3 id="askTitle">' + q.title + '</h3><p>' + esc(q.why) + ' ' + esc(ctx) + '.</p></div></div>' +
+        '<div class="answers"><button class="btn primary" id="askYes" type="button">' + svg('check') + 'Yes, it’s my ' + esc(kd.label.toLowerCase()) + '</button><button class="btn" id="askNo" type="button">No, it’s something else</button></div>' + foot;
+    } else {
+      const title = l ? 'Rename this place' : 'What is this place for you?';
+      card.innerHTML = '<div class="grab"></div>' + prog + '<div class="askhead"><span class="askicon">' + svg('pin') + '</span><div><h3 id="askTitle">' + title + '</h3><p>' + esc(ctx) + (p.googleName ? ' · Google calls it “' + esc(p.googleName) + '”' : '') + '.</p></div></div>' +
+        '<div class="kinds">' + KINDS.map((k) => '<button class="kind" type="button" data-kind="' + k.id + '" style="--c:' + k.color + '" aria-pressed="' + (askKind === k.id) + '">' + svg(k.icon) + '<span>' + esc(k.label) + '</span></button>').join('') + '</div>' +
+        '<div class="field"><input id="askName" type="text" maxlength="60" autocomplete="off" placeholder="Name it, e.g. Dana’s place (optional)" value="' + esc(l ? l.name || '' : '') + '"></div>' +
+        '<div class="answers" style="margin-top:12px"><button class="btn primary" id="askSave" type="button">Save</button></div>' + foot;
+      const input = $('askName'), save = $('askSave'), sync = () => { save.disabled = !(askKind || input.value.trim()); };
+      input.oninput = sync; sync();
+      input.onkeydown = (e) => { if (e.key === 'Enter' && !save.disabled) save.click(); };
+    }
+  }
+  $('ask').addEventListener('click', (e) => {
+    const t = e.target.closest('button'); if (!t || !askPlace) return;
+    const p = askPlace;
+    if (t.id === 'askYes') { const kd = kindById[questionFor(p).kind]; saveLabel(p, kd.label, kd.id); toast('Saved: ' + kd.label, 2200); nextAsk(); }
+    else if (t.id === 'askNo') { askStage = 'choose'; askKind = null; renderAsk(); const i = $('askName'); if (i) i.focus(); }
+    else if (t.classList.contains('kind')) { askKind = askKind === t.dataset.kind ? null : t.dataset.kind; card_sync(); }
+    else if (t.id === 'askSave') {
+      const typed = $('askName').value.trim(), kind = askKind || 'other', name = typed || kindById[kind].label;
+      saveLabel(p, name, kind); toast('Saved: ' + name, 2200); nextAsk();
+    }
+    else if (t.id === 'askNever') { saveLabel(p, '', null, true); toast('We won’t ask about this place again.', 2400); nextAsk(); }
+    else if (t.id === 'askRemove') { labels = labels.filter((x) => x !== labelFor(p)); saveLabels(); refreshDay(); renderStats(); toast('Name removed', 2000); closeAsk(); }
+    else if (t.id === 'askLater') { if (!labelFor(p)) { try { localStorage.setItem('tl-ask-snooze', String(Date.now() + 864e5)); } catch (x) {} } closeAsk(); }
+  });
+  function card_sync() { document.querySelectorAll('#ask .kind').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.kind === askKind))); const save = $('askSave'); if (save) save.disabled = !(askKind || $('askName').value.trim()); }
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('ask').hidden) { const b = $('askLater'); if (b) b.click(); } });
+
+  function updateHudEdit(s) {                                  // the name/rename button on the HUD while stopped somewhere
+    const b = $('hudEdit'), p = s.kind === 'stay' ? s.place : null;
+    if (p === hudPlace) return;
+    hudPlace = p; b.hidden = !p;
+    if (p) { const named = !!labelName(p); b.classList.toggle('need', !named); b.querySelector('.lbl').textContent = named ? '' : 'Name'; b.setAttribute('aria-label', named ? 'Rename this place' : 'Name this place'); }
+  }
+  $('hudEdit').onclick = () => { if (hudPlace) openAsk([hudPlace]); };
+
+  // Once per visit, gently ask about the most visited place that still has no name (never during playback, and not again for a day after "Not now").
+  function scheduleAsk() {
+    if (askedOnce || (navigator.webdriver && !window.__forceAsk)) return;
+    setTimeout(() => {
+      if (askedOnce || askSnoozed() || playing || askPlace || !data || !$('ask').hidden) return;
+      const list = pendingPlaces().slice(0, 3);
+      if (list.length) { askedOnce = true; openAsk(list); }
+    }, 2400);
+  }
+
   // ---- Insights ----
   const fmtKm = (v) => (v >= 100 ? Math.round(v).toLocaleString() : v.toFixed(1)) + ' km';
   function renderStats() {
@@ -477,21 +613,26 @@
     const s = TL.statsFromTimeline(timeline, year);
     const modes = Object.entries(s.byModeKm).sort((a, b) => b[1] - a[1]), maxKm = modes.length ? modes[0][1] || 1 : 1;
     const modeRows = modes.map(([k, v]) => `<li class="row" style="--c:${MODE_COLOR[k]}"><span class="ico">${svg(MODE_ICON[k])}</span><div class="grow"><div class="top"><b>${MODE_NAME[k]}</b><span>${fmtKm(v)}</span></div><div class="meter"><i style="width:${Math.max(3, (v / maxKm) * 100)}%"></i></div></div></li>`).join('');
-    const maxH = s.topPlaces.length ? s.topPlaces[0].hours || 1 : 1;
-    const placeRows = s.topPlaces.map((p, i) => `<li class="row" style="--c:var(--accent)"><span class="rank">${i + 1}</span><div class="grow"><div class="top"><b>${esc(p.name || p.lat.toFixed(3) + ', ' + p.lng.toFixed(3))}</b><span>${Math.round(p.hours).toLocaleString()} h</span></div><div class="sub">${p.visits} visit${p.visits > 1 ? 's' : ''}</div><div class="meter"><i style="width:${Math.max(3, (p.hours / maxH) * 100)}%"></i></div></div></li>`).join('');
+    const shown = places.slice(0, 8), maxH = shown.length ? shown[0].hours || 1 : 1, pend = pendingPlaces().length;
+    const placeRows = shown.map((p) => {
+      const nm = placeLabelText(p), kd = placeKind(p), named = !!labelFor(p) && !!labelName(p), hint = !named && p.guess ? ' · looks like your ' + p.guess : '';
+      return `<li><button class="row" type="button" data-pid="${p.id}" style="--c:${kd ? kd.color : 'var(--accent)'}"><span class="ico">${svg(kd ? kd.icon : 'pin')}</span><div class="grow"><div class="top"><b>${nm ? esc(nm) : '<i class="unnamed">Unnamed place</i>'}</b><span>${Math.round(p.hours).toLocaleString()} h</span></div><div class="sub">${p.visits} visit${p.visits > 1 ? 's' : ''}${hint}</div><div class="meter"><i style="width:${Math.max(3, (p.hours / maxH) * 100)}%"></i></div></div>${named ? `<span class="editdot">${svg('pencil')}</span>` : '<span class="pill">Name it</span>'}</button></li>`;
+    }).join('');
     const sw = (id, label, on) => `<button class="switch" id="${id}" role="switch" aria-checked="${on}" aria-label="${label}" type="button"><span></span></button>`;
     el.innerHTML = `<div class="page">` +
       `<div class="card hero-card"><h2>${year ?? 'All time'} in review</h2><div class="big num">${Math.round(s.totalKm).toLocaleString()}<small>km travelled</small></div><p>Across ${s.visitCount.toLocaleString()} stops and ${s.uniquePlaces.toLocaleString()} different places.</p></div>` +
       `<div class="tiles"><div class="tile"><b>${s.activeDays.toLocaleString()}</b><span>active days</span></div><div class="tile"><b>${s.uniquePlaces.toLocaleString()}</b><span>different places</span></div>` +
       (s.longest ? `<div class="tile"><b>${fmtKm(s.longest.dist / 1000).replace(' km', '')}<small style="font-size:13px;color:var(--text-2);font-weight:600"> km</small></b><span>longest ${MODE_NAME[s.longest.mode].toLowerCase()} leg</span></div>` : '') + `</div>` +
       `<div class="card"><h2>How you travelled</h2><ul class="rows">${modeRows || '<li class="empty">No trips yet.</li>'}</ul></div>` +
-      `<div class="card"><h2>Where you spent the most time</h2><ul class="rows">${placeRows || '<li class="empty">No stops yet.</li>'}</ul></div>` +
+      `<div class="card"><h2>Your places</h2>${pend ? `<div class="cta"><div class="t"><b>${pend} place${pend > 1 ? 's need' : ' needs'} a name</b><span>A quick question about each.</span></div><button class="btn primary sm" id="askStart" type="button">Start</button></div>` : ''}<ul class="rows">${placeRows || '<li class="empty">No stops yet.</li>'}</ul></div>` +
       `<div class="card"><h2>Playback</h2>` +
       `<div class="setting"><div class="t"><b>Keep screen on</b><span id="awakeNote"></span></div>${sw('swAwake', 'Keep screen on', keepOn)}</div>` +
       `<div class="setting"><div class="t"><b>Continue to the next day</b><span>When a day ends, the replay moves on and keeps playing.</span></div>${sw('swNext', 'Continue to the next day', autoNext)}</div></div>` +
-      `<div class="card"><h2>Your data</h2><p class="note" id="dinfo" style="margin-top:0"></p><div class="actions"><button class="btn" id="chg" type="button"><span data-icon="refresh"></span>Change file</button><button class="btn danger" id="forget" type="button"><span data-icon="trash"></span><span class="lbl">Forget my data</span></button></div><p class="note">Kept only in this browser, on this phone. Nothing is uploaded.</p></div>` +
+      `<div class="card"><h2>Your data</h2><p class="note" id="dinfo" style="margin-top:0"></p><div class="actions"><button class="btn" id="chg" type="button"><span data-icon="refresh"></span>Change file</button><button class="btn danger" id="forget" type="button"><span data-icon="trash"></span><span class="lbl">Forget my data</span></button></div><p class="note">Your file and place names are kept only in this browser, on this phone. Nothing is uploaded.</p></div>` +
       `</div>`;
     hydrate(el);
+    el.querySelectorAll('button.row[data-pid]').forEach((b) => (b.onclick = () => { const p = places.find((x) => String(x.id) === b.dataset.pid); if (p) openAsk([p]); }));
+    const st = $('askStart'); if (st) st.onclick = () => openAsk(pendingPlaces().slice(0, 5));
     const toggle = (id, get, set) => { const b = $(id); b.onclick = () => { const on = !get(); set(on); b.setAttribute('aria-checked', String(on)); buzz(); }; };
     toggle('swAwake', () => keepOn, (on) => { keepOn = on; try { localStorage.setItem('tl-awake', on ? '1' : '0'); } catch (e) {} if (on) keepAwake(); else releaseAwake(); wakeInfo(); });
     toggle('swNext', () => autoNext, (on) => { autoNext = on; try { localStorage.setItem('tl-autonext', on ? '1' : '0'); } catch (e) {} });
@@ -500,7 +641,7 @@
     $('forget').onclick = async () => {                       // two taps, so it cannot be hit by accident
       const b = $('forget'), lbl = b.querySelector('.lbl');
       if (!b.classList.contains('armed')) { b.classList.add('armed'); lbl.textContent = 'Tap again to confirm'; clearTimeout(armedT); armedT = setTimeout(() => { b.classList.remove('armed'); lbl.textContent = 'Forget my data'; }, 3500); return; }
-      await clearFiles(); location.reload();
+      await clearFiles(); try { localStorage.removeItem('tl-places'); localStorage.removeItem('tl-ask-snooze'); } catch (e) {} location.reload();
     };
     wakeInfo(); dataInfo();
   }

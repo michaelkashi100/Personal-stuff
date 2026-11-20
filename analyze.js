@@ -313,7 +313,7 @@
       }
       return best;
     };
-    for (const it of items) if (it.kind === 'stay') { const v = visitAt(it); it.visit = v || null; if (v) { it.name = placeLabel(v); it.type = v.type; it.nd = it.t1 - it.t0; } }
+    for (const it of items) if (it.kind === 'stay') { const v = visitAt(it); it.visit = v || null; if (v) { it.name = placeLabel(v); it.type = v.type; it.nd = it.t1 - it.t0; it.realName = /^[A-Za-z0-9_-]{20,}$/.test(v.name || '') ? '' : (v.name || ''); } }   // realName: a name Google really gave the place (not an opaque id)
     for (let k = 1; k < items.length - 1; k++) {
       const s = items[k], a = items[k - 1], b = items[k + 1];
       if (s.kind === 'stay' && !s.visit && s.t1 - s.t0 < CFG.trafficStay && a.kind === 'move' && b.kind === 'move' && a.mode === b.mode && (a.mode === 'drive' || a.mode === 'bike' || a.mode === 'transit')) {
@@ -327,9 +327,42 @@
     const night = new Map();
     for (const it of items) if (it.kind === 'stay') { let h = 0; for (let t = it.t0; t < it.t1; t += 1800000) { const hr = new Date(t).getHours(); if (hr >= 22 || hr < 7) h += 0.5; } night.set(cell(it), (night.get(cell(it)) || 0) + h); }
     let home = null, hb = 3; for (const [c, h] of night) if (h > hb) { hb = h; home = c; }
-    for (const it of items) if (it.kind === 'stay' && it.name === 'Stopped' && cell(it) === home) it.name = 'Home';
+    for (const it of items) if (it.kind === 'stay' && it.name === 'Stopped' && cell(it) === home) { it.name = 'Home'; it.homeGuess = true; }
     for (const it of items) if (it.kind === 'stay') it.nd = it.t1 - it.t0;
     return items;
+  }
+
+  // Group stays into places (every stay within 150 m of a place belongs to it) and describe how each place is used,
+  // so the app can ask sensible questions ("is this your home?", "is this where you work?") about the places that matter.
+  // Sets stay.place on every stay.
+  function clusterPlaces(tl) {
+    const places = [], hourOf = (t) => new Date(t).getHours();
+    for (const s of tl) {
+      if (s.kind !== 'stay') continue;
+      let p = null, pd = 150;
+      for (const q of places) { const d = d4(s.lat, s.lng, q.lat, q.lng); if (d < pd) { pd = d; p = q; } }
+      if (!p) { p = { id: places.length, lat: s.lat, lng: s.lng, visits: 0, hours: 0, nightH: 0, dayH: 0, eveH: 0, nights: new Set(), dayDays: new Set(), startHours: new Array(24).fill(0), names: {}, types: {}, first: s.t0, last: s.t1 }; places.push(p); }
+      s.place = p;
+      const h = (s.t1 - s.t0) / 3.6e6;
+      p.lat += (s.lat - p.lat) / (p.visits + 1); p.lng += (s.lng - p.lng) / (p.visits + 1);
+      p.visits++; p.hours += h; p.first = Math.min(p.first, s.t0); p.last = Math.max(p.last, s.t1); p.startHours[hourOf(s.t0)]++;
+      for (let t = s.t0; t < s.t1; t += 1800000) {
+        const d = new Date(t), hr = d.getHours();
+        if (hr >= 22 || hr < 7) { p.nightH += 0.5; p.nights.add(new Date(t - 7 * 3600000).toDateString()); }
+        else if (hr >= 9 && hr < 18) { p.dayH += 0.5; p.dayDays.add(d.toDateString()); }
+        else if (hr >= 18) p.eveH += 0.5;
+      }
+      if (s.realName) p.names[s.realName] = (p.names[s.realName] || 0) + h;
+      if (s.type && !/^(unknown|place|stopped)$/i.test(s.type)) p.types[s.type] = (p.types[s.type] || 0) + h;
+    }
+    const top = (o) => Object.keys(o).sort((x, y) => o[y] - o[x])[0] || '';
+    for (const p of places) { p.googleName = top(p.names); p.googleType = top(p.types); p.guess = null; }
+    // the place where the nights are spent is home; the other place that fills the days is work
+    let home = null; for (const p of places) if (p.nightH >= 6 && p.nights.size >= 2 && (!home || p.nightH > home.nightH)) home = p;
+    if (home) home.guess = 'home';
+    let work = null; for (const p of places) if (p !== home && p.dayH >= 10 && p.dayDays.size >= 3 && (!work || p.dayH > work.dayH)) work = p;
+    if (work) work.guess = 'work';
+    return places.sort((x, y) => y.hours - x.hours);
   }
 
   // Yearly numbers from the timeline (so the stats agree with what the replay shows).
@@ -354,6 +387,6 @@
     return { totalKm: total / 1000, byModeKm: byMode, visitCount: stays.length, uniquePlaces: places.length, topPlaces: places.slice().sort((a, b) => b.hours - a.hours).slice(0, 5), activeDays: days.size, longest };
   }
 
-  const api = { analyze, statsFromTimeline, CFG, labelMode };
+  const api = { analyze, statsFromTimeline, clusterPlaces, CFG, labelMode };
   if (typeof module !== 'undefined') module.exports = Object.assign(P, api); else Object.assign(P, api);
 })(typeof self !== 'undefined' ? self : this);
