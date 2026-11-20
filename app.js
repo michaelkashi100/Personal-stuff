@@ -5,11 +5,48 @@
   const COLORS = { walking: '#4ade80', 'on foot': '#4ade80', cycling: '#facc15', 'in passenger vehicle': '#f87171', driving: '#f87171', 'in train': '#a78bfa', 'in subway': '#a78bfa', flying: '#fb923c', path: '#38bdf8', unknown: '#94a3b8' };
 
   // ---- Remember the file: a private copy kept in this browser's own storage on this device ----
+  // Saved as slimmed-down text in IndexedDB; Cache Storage is the fallback. Failures are reported, never swallowed.
+  const CACHE_NAME = 'timeline-data', CACHE_URL = './saved-timeline.json';
+  let savedMeta = null, saveErr = '';
+  const errName = (e) => (e && (e.name || e.message)) || 'error';
   const idb = () => new Promise((res, rej) => { const r = indexedDB.open('timeline', 1); r.onupgradeneeded = () => r.result.createObjectStore('files'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
-  const tx = async (mode, fn) => { const db = await idb(); return new Promise((res, rej) => { const t = db.transaction('files', mode), q = fn(t.objectStore('files')); t.oncomplete = () => res(q && q.result); t.onerror = t.onabort = () => rej(t.error); }); };
-  const saveFiles = (list) => tx('readwrite', (st) => st.put(list, 'current')).catch(() => {});          // list: [{ name, blob }]
-  const loadFiles = () => tx('readonly', (st) => st.get('current')).catch(() => null);
-  const clearFiles = () => tx('readwrite', (st) => st.delete('current')).catch(() => {});
+  const tx = async (mode, fn) => {
+    const db = await idb();
+    try {
+      return await new Promise((res, rej) => {
+        const t = db.transaction('files', mode), q = fn(t.objectStore('files'));
+        t.oncomplete = () => res(q && q.result);
+        t.onerror = (ev) => rej((ev.target && ev.target.error) || t.error || new Error('storage error'));
+        t.onabort = () => rej(t.error || new Error('storage aborted'));
+      });
+    } finally { db.close(); }
+  };
+  const textSize = (list) => list.reduce((a, f) => a + (f.text ? f.text.length : f.blob ? f.blob.size : 0), 0);
+  async function saveFiles(list) {                          // list: [{ name, text }]
+    const size = textSize(list);
+    let first = '';
+    try { await tx('readwrite', (st) => st.put(list, 'current')); return { ok: true, where: 'browser storage', size }; } catch (e) { first = errName(e); }
+    try { const c = await caches.open(CACHE_NAME); await c.put(CACHE_URL, new Response(JSON.stringify(list))); return { ok: true, where: 'cache storage', size }; }
+    catch (e) { return { ok: false, size, error: first + ' / ' + errName(e) }; }
+  }
+  async function loadFiles() {
+    try { const v = await tx('readonly', (st) => st.get('current')); if (v && v.length) { savedMeta = { size: textSize(v), where: 'browser storage' }; return v; } } catch (e) { saveErr = 'read: ' + errName(e); }
+    try { const c = await caches.open(CACHE_NAME), r = await c.match(CACHE_URL); if (r) { const v = await r.json(); if (v && v.length) { savedMeta = { size: textSize(v), where: 'cache storage' }; return v; } } } catch (e) { saveErr = 'read: ' + errName(e); }
+    return null;
+  }
+  async function clearFiles() {
+    try { await tx('readwrite', (st) => st.delete('current')); } catch (e) {}
+    try { await caches.delete(CACHE_NAME); } catch (e) {}
+  }
+  // Keep only what the app reads (drops bulky rawSignals etc.); still the original Google format.
+  function slim(json) {
+    if (Array.isArray(json)) return json;
+    for (const k of ['semanticSegments', 'timelineObjects', 'locations']) if (json[k]) return { [k]: json[k] };
+    return json;
+  }
+  let toastTimer = 0;
+  function toast(msg, ms) { const el = $('toast'); el.textContent = msg; el.style.display = 'block'; clearTimeout(toastTimer); toastTimer = setTimeout(() => (el.style.display = 'none'), ms || 4000); }
+  const mb = (n) => (n < 1e6 ? Math.max(1, Math.round(n / 1e3)) + ' KB' : (n / 1e6).toFixed(1) + ' MB');
 
   // ---- Import ----
   const fail = (msg) => { if (data) alert(msg); else { $('import').style.visibility = 'visible'; $('pick').style.display = ''; $('status').textContent = msg; } };
@@ -19,11 +56,11 @@
     try {
       for (const f of sources) {
         $('status').textContent = 'Reading ' + f.name + '…';
-        const text = await f.text();
-        const d = TL.parseTimeline(JSON.parse(text));
+        const json = JSON.parse(await f.text());
+        const d = TL.parseTimeline(json);
         // concat, not push(...arr): spreading a huge array overflows the call stack.
         merged.visits = merged.visits.concat(d.visits); merged.trips = merged.trips.concat(d.trips); merged.points = merged.points.concat(d.points);
-        if (save) keep.push({ name: f.name, blob: new Blob([text], { type: 'application/json' }) });
+        if (save) keep.push({ name: f.name, text: JSON.stringify(slim(json)) });
       }
     } catch (err) {
       // Show where it failed (first stack frames only; no file contents) to make problems diagnosable.
@@ -31,8 +68,14 @@
       fail('Could not read file: ' + err.message + (where ? ' [' + where + ']' : ''));
       return false;
     }
-    if (save) { await saveFiles(keep); if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {}); }
+    let res = null;
+    if (save) {
+      res = await saveFiles(keep);
+      if (res.ok) { savedMeta = { size: res.size, where: res.where }; saveErr = ''; if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {}); }
+      else { savedMeta = null; saveErr = res.error; }
+    }
     start(merged);
+    if (res) toast(res.ok ? 'Saved on this phone · ' + mb(res.size) : "Couldn't save a copy: " + res.error, res.ok ? 3500 : 9000);
     return true;
   }
   $('pick').onclick = () => $('file').click();
@@ -305,6 +348,13 @@
   };
   window.__tl = () => ({ zoom: map.getZoom(), heading, frac, V: scenes.V });   // test hook (read-only)
 
+  async function dataInfo() {
+    const el = $('dinfo'); if (!el) return;
+    let t = savedMeta ? 'Saved copy: ' + mb(savedMeta.size) + ' (' + savedMeta.where + ')' : 'No saved copy' + (saveErr ? ' — ' + saveErr : '');
+    try { if (navigator.storage) { const p = await navigator.storage.persisted(), est = await navigator.storage.estimate(); t += ' · protected: ' + (p ? 'yes' : 'no') + ' · site storage ' + mb(est.usage) + ' of ' + mb(est.quota); } } catch (e) {}
+    el.textContent = t;
+  }
+
   // ---- Stats ----
   function renderStats() {
     const years = [...new Set(data.visits.map((v) => new Date(v.start).getFullYear()).concat(data.trips.map((t) => new Date(t.start).getFullYear())))].sort();
@@ -321,9 +371,10 @@
       (s.longest ? card((s.longest.dist / 1000).toFixed(1) + ' km', `longest single trip (${s.longest.type}, ${new Date(s.longest.start).toLocaleDateString()})`) : '') +
       `<div class="card"><div class="lbl">By activity</div><ul>${modes || '<li>none</li>'}</ul></div>` +
       `<div class="card"><div class="lbl">Where you spent the most time</div><ul>${top || '<li>none</li>'}</ul></div>` +
-      `<div class="card"><div class="lbl">Your data is saved only on this phone.</div><p style="margin:10px 0 0"><button class="btn2" id="chg">Change file</button> <button class="btn2" id="forget">Forget my data</button></p></div>`;
+      `<div class="card"><div class="lbl">Your data is saved only on this phone.</div><div id="dinfo" class="lbl" style="margin-top:6px"></div><p style="margin:10px 0 0"><button class="btn2" id="chg">Change file</button> <button class="btn2" id="forget">Forget my data</button></p></div>`;
     $('chg').onclick = () => $('file').click();
     $('forget').onclick = async () => { await clearFiles(); location.reload(); };
+    dataInfo();
   }
 
   // Self-updating: check for a new version on every open, and reload into it automatically
@@ -333,7 +384,7 @@
   loadFiles().then((saved) => {
     if (saved && saved.length) {
       $('import').style.visibility = 'visible'; $('pick').style.display = 'none'; $('status').textContent = 'Loading your saved timeline…';
-      return loadFromSources(saved.map((e) => ({ name: e.name, text: () => e.blob.text() })), false);
+      return loadFromSources(saved.map((e) => ({ name: e.name, text: () => (e.text != null ? Promise.resolve(e.text) : e.blob.text()) })), false);
     }
     $('import').style.visibility = 'visible';
   }).catch(() => { $('import').style.visibility = 'visible'; });
