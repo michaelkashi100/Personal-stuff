@@ -156,6 +156,44 @@
   @keyframes pulse { 0% { transform:scale(.5); opacity:.9; } 100% { transform:scale(2.3); opacity:0; } }
 
   body.on-stats #toast { bottom:calc(24px + env(safe-area-inset-bottom)); }
+  /* ----- naming places ----- */
+  #hudTop { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:30px; margin:-2px -6px 0 0; }
+  #hudEdit { pointer-events:auto; height:30px; min-width:30px; padding:0 9px; border-radius:10px; display:inline-flex; align-items:center; justify-content:center; gap:5px; background:var(--surface-3); border:1px solid var(--line-strong); color:var(--text); font-weight:650; font-size:12px; }
+  #hudEdit[hidden] { display:none; }
+  #hudEdit .ic { width:15px; height:15px; }
+  #hudEdit.need { background:linear-gradient(180deg,#86cffa,#4fb3f0); color:var(--accent-ink); border-color:transparent; }
+  #ask { position:fixed; inset:0; z-index:4000; pointer-events:none; }
+  #ask .card { position:absolute; left:0; right:0; bottom:0; max-width:560px; margin:0 auto; pointer-events:auto; padding:10px 18px calc(18px + env(safe-area-inset-bottom)); background:linear-gradient(180deg,#131c30,#0c1322); border:1px solid var(--line-strong); border-bottom:0; border-radius:26px 26px 0 0; box-shadow:0 -18px 60px rgba(0,0,0,.6); animation:sheetup .3s var(--ease) both; max-height:88%; overflow:auto; }
+  @keyframes sheetup { from { transform:translateY(34px); opacity:0; } }
+  .grab { width:40px; height:4px; border-radius:2px; background:var(--line-strong); margin:0 auto 14px; }
+  .progress { font-size:11.5px; letter-spacing:.09em; text-transform:uppercase; color:var(--muted); font-weight:650; margin:0 0 8px; }
+  .askhead { display:flex; gap:13px; align-items:center; }
+  .askicon { --c:var(--accent); width:46px; height:46px; border-radius:15px; display:grid; place-items:center; color:var(--c); background:rgba(92,188,246,.16); background:color-mix(in srgb,var(--c) 20%,transparent); flex:none; }
+  .askicon .ic { width:24px; height:24px; }
+  .askhead h3 { margin:0; font-size:20px; letter-spacing:-.018em; line-height:1.2; font-weight:720; }
+  .askhead p { margin:4px 0 0; font-size:13px; color:var(--text-2); line-height:1.35; }
+  .answers { display:flex; flex-direction:column; gap:10px; margin-top:18px; }
+  .kinds { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; margin-top:16px; }
+  .kind { --c:var(--accent); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; padding:12px 4px 10px; min-height:76px; border-radius:15px; background:var(--surface-2); border:1px solid var(--line); color:var(--text-2); font-size:11.5px; font-weight:620; line-height:1.15; text-align:center; transition:background .15s,border-color .15s,transform .12s; }
+  .kind .ic { width:23px; height:23px; color:var(--c); }
+  .kind[aria-pressed=true] { background:rgba(92,188,246,.14); background:color-mix(in srgb,var(--c) 18%,var(--surface-2)); border-color:var(--c); color:var(--text); }
+  .kind:active { transform:scale(.96); }
+  .field { margin-top:12px; }
+  .field input { width:100%; height:50px; border-radius:var(--r-md); background:var(--surface-2); border:1px solid var(--line-strong); padding:0 14px; font-size:16px; color:var(--text); }
+  .field input::placeholder { color:var(--muted); }
+  .field input:focus { outline:2px solid var(--accent); outline-offset:1px; }
+  .askfoot { display:flex; gap:8px; justify-content:space-between; margin-top:12px; }
+  .ghost { height:42px; padding:0 8px; color:var(--muted); font-size:13px; font-weight:620; border-radius:10px; }
+  .ghost:hover { color:var(--text-2); } .ghost.danger { color:var(--danger); }
+  button.row { width:100%; text-align:left; padding:0; border-radius:var(--r-md); }
+  .row .go { flex:none; }
+  .pill { display:inline-flex; align-items:center; height:34px; padding:0 13px; border-radius:999px; background:linear-gradient(180deg,#86cffa,#4fb3f0); color:var(--accent-ink); font-weight:680; font-size:12.5px; }
+  .editdot { width:34px; height:34px; border-radius:11px; display:grid; place-items:center; background:var(--surface-2); border:1px solid var(--line); color:var(--text-2); }
+  .editdot .ic { width:16px; height:16px; }
+  .unnamed { color:var(--muted); font-style:normal; font-weight:560; }
+  .cta { display:flex; align-items:center; gap:12px; padding:12px 14px; margin:12px 0 4px; border-radius:var(--r-md); background:rgba(92,188,246,.1); border:1px solid rgba(92,188,246,.3); }
+  .cta .t { flex:1; min-width:0; } .cta .t b { display:block; font-size:14.5px; } .cta .t span { display:block; font-size:12.5px; color:var(--text-2); margin-top:1px; }
+  .btn.sm { height:40px; padding:0 15px; font-size:13.5px; border-radius:12px; }
   /* ----- toast ----- */
   #toast { display:none; position:fixed; left:50%; transform:translateX(-50%); bottom:calc(var(--sheet) + 22px + env(safe-area-inset-bottom)); z-index:3000; max-width:min(92%,420px); padding:11px 16px; border-radius:var(--r-md); background:var(--surface-solid); border:1px solid var(--line-strong); box-shadow:var(--shadow-1); color:var(--text); font-size:13.5px; font-weight:540; text-align:center; }
 
@@ -204,6 +242,8 @@
 <body>
 <div id="toast" role="status" aria-live="polite"></div>
 
+<div id="ask" hidden role="dialog" aria-labelledby="askTitle"><div class="card"></div></div>
+
 <section id="import">
   <div class="hero">
     <div class="appicon"><img src="icons/icon-192.png" alt=""></div>
@@ -217,7 +257,7 @@
       <li><span class="tag" data-icon="shield"></span><div><b>Stays on this phone</b>Your file is read here and never uploaded.</div></li>
       <li><span class="tag" data-icon="route"></span><div><b>Understands movement</b>Stops, walks, rides and drives are told apart automatically.</div></li>
     </ul>
-    <p class="build">build 15 &middot; locked replay</p>
+    <p class="build">build 16 &middot; named places</p>
   </div>
 </section>
 
@@ -232,7 +272,7 @@
   <main>
     <div id="mapView">
       <div id="map"></div>
-      <div id="hud" aria-live="off"><div id="hudDay"></div><div id="hudTime">--:--</div><div id="hudRow"><span id="hudIcon"></span><span id="hudSub"></span></div></div>
+      <div id="hud" aria-live="off"><div id="hudTop"><div id="hudDay"></div><button id="hudEdit" type="button" hidden><span data-icon="pencil"></span><span class="lbl"></span></button></div><div id="hudTime">--:--</div><div id="hudRow"><span id="hudIcon"></span><span id="hudSub"></span></div></div>
       <div id="dayBanner" aria-hidden="true"><b></b><span></span></div>
       <div id="controls">
         <div class="daynav">
