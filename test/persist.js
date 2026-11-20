@@ -22,7 +22,7 @@ const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) process
   await p.reload(); await p.waitForSelector('#app', { state: 'visible' });
   ok((await days()) === n2, 'the replaced file is what gets remembered');
 
-  await p.click('nav button[data-v=stats]'); await p.click('#forget');
+  await p.click('nav button[data-v=stats]'); await p.click('#forget'); await p.click('#forget');   // two taps confirm
   await p.waitForSelector('#pick', { state: 'visible' });
   await p.reload(); await p.waitForTimeout(500);
   ok((await p.isVisible('#pick')) && !(await p.isVisible('#app')), 'after "Forget my data" the picker returns and stays');

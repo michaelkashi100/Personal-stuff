@@ -11,7 +11,7 @@ const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) process
   await p.selectOption('#day', { index: 0 });
   let h = await hook(p), sum = await p.textContent('#summary');
   ok(JSON.stringify(h.items) === JSON.stringify(['stay', 'drive', 'stay', 'walk', 'stay', 'other']), 'day 1: fake 55 m walk ignored, Home is one stay, drive / work / walk / gym, then an honest no-data leg overnight -> ' + h.items.join(','));
-  ok(/🚗 15\.0 km/.test(sum) && /🚶 9\d\d m/.test(sum), 'day 1 summary shows distance per mode: "' + sum + '"');
+  ok(/15\.0 km/.test(sum) && /9\d\d m/.test(sum), 'day 1 summary shows distance per mode: "' + sum + '"');
   let bad = await sweep(p); ok(bad.length === 0, 'day 1: car shown only while driving ' + (bad.length ? bad.join(' ') : ''));
   await p.selectOption('#day', { index: 1 });
   h = await hook(p); ok(JSON.stringify(h.items) === JSON.stringify(['stay', 'drive', 'stay', 'walk', 'stay']), 'day 2: label "walking" at 40 km/h -> drive; label "driving" at 2 km/h -> walk -> ' + h.items.join(','));
