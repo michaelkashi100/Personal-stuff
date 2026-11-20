@@ -1,5 +1,22 @@
 (function () {
   const $ = (id) => document.getElementById(id);
+  // A stale cached page can be paired with newer scripts (an old index.html without analyze.js). Detect that,
+  // clear our old app caches (never the saved timeline) and refresh once; if it persists, say what to do.
+  if (typeof TL.analyze !== 'function') {
+    let tried = false;
+    try { tried = sessionStorage.getItem('tl-refresh') === '1'; sessionStorage.setItem('tl-refresh', '1'); } catch (e) {}
+    if (!tried) {
+      (async () => {
+        try {
+          for (const k of await caches.keys()) if (k.startsWith('timeline-v')) await caches.delete(k);
+          for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister();
+        } catch (e) {}
+        location.reload();
+      })();
+    } else $('status').textContent = 'The app was updated. Close this tab and open the site again.';
+    return;
+  }
+  try { sessionStorage.removeItem('tl-refresh'); } catch (e) {}
   let data = null, timeline = [], map, dayLayer, marker;
   const DAY = 86400000;
   const MODE_COLOR = { drive: '#f87171', walk: '#4ade80', run: '#86efac', bike: '#facc15', transit: '#a78bfa', flight: '#fb923c', other: '#94a3b8' };
