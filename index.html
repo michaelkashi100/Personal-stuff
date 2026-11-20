@@ -59,16 +59,19 @@
     background:rgba(15,23,42,.72); -webkit-backdrop-filter:blur(8px); backdrop-filter:blur(8px); border:1px solid rgba(148,163,184,.18); }
   #hudTime { font-size:1.7rem; font-weight:700; line-height:1.1; font-variant-numeric:tabular-nums; }
   #hudSub { font-size:.82rem; color:var(--acc); margin-top:2px; }
+  #toast { display:none; position:fixed; left:50%; transform:translateX(-50%); top:64px; z-index:3000; max-width:90%; padding:10px 16px; border-radius:12px;
+    background:rgba(15,23,42,.95); border:1px solid rgba(148,163,184,.3); color:var(--fg); font-size:.9rem; text-align:center; }
 </style>
 </head>
 <body>
+<div id="toast" role="status"></div>
 <section id="import">
   <h1>📍 My Timeline</h1>
   <p>Pick your Google Timeline export (<code>Timeline.json</code>, <code>Records.json</code> or a Semantic&nbsp;Location&nbsp;History month). It is read on this device only and never uploaded.</p>
   <button class="btn" id="pick">Choose file</button>
   <input type="file" id="file" accept=".json,application/json" hidden multiple>
   <p id="status"></p>
-  <p style="font-size:.75rem;opacity:.6">build 8 (remembers file)</p>
+  <p style="font-size:.75rem;opacity:.6">build 9 (reliable save)</p>
 </section>
 
 <section id="app">
