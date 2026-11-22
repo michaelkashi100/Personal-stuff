@@ -8,15 +8,43 @@ import android.database.sqlite.SQLiteOpenHelper
 data class Stats(val count: Long, val first: Long, val last: Long)
 
 /** The recorded locations. Stored only in this app's private storage on the phone. */
-class Db private constructor(context: Context) : SQLiteOpenHelper(context, "timeline.db", null, 1) {
+class Db private constructor(context: Context) : SQLiteOpenHelper(context, "timeline.db", null, 2) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE fixes(t INTEGER PRIMARY KEY, lat REAL NOT NULL, lng REAL NOT NULL, acc REAL NOT NULL, spd REAL NOT NULL, src INTEGER NOT NULL)")
         db.execSQL("CREATE TABLE acts(id INTEGER PRIMARY KEY AUTOINCREMENT, t INTEGER NOT NULL, type INTEGER NOT NULL, enter INTEGER NOT NULL)")
         db.execSQL("CREATE INDEX acts_t ON acts(t)")
+        db.execSQL("CREATE TABLE screen(start INTEGER PRIMARY KEY, stop INTEGER NOT NULL)")
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {}
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) db.execSQL("CREATE TABLE IF NOT EXISTS screen(start INTEGER PRIMARY KEY, stop INTEGER NOT NULL)")
+    }
+
+    /** Phone-in-use sessions. A session that was still open is replaced when it is read again with its real end. */
+    @Synchronized
+    fun upsertScreen(list: List<Session>) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            for (s in list) {
+                val v = ContentValues(2)
+                v.put("start", s.start); v.put("stop", s.end)
+                db.insertWithOnConflict("screen", null, v, SQLiteDatabase.CONFLICT_REPLACE)
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun screen(since: Long): List<Session> {
+        val out = ArrayList<Session>()
+        readableDatabase.rawQuery("SELECT start, stop FROM screen WHERE stop >= ? ORDER BY start", arrayOf(since.toString())).use {
+            while (it.moveToNext()) out.add(Session(it.getLong(0), it.getLong(1)))
+        }
+        return out
+    }
 
     @Synchronized
     fun insertFixes(list: List<Fix>) {

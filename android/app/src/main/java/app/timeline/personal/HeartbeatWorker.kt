@@ -19,6 +19,7 @@ class HeartbeatWorker(context: Context, params: WorkerParameters) : Worker(conte
     @SuppressLint("MissingPermission")
     override fun doWork(): Result {
         val c = applicationContext
+        try { UsageSync.sync(c) } catch (e: Exception) { /* usage access not granted or unavailable */ }
         if (!Recorder.enabled(c)) return Result.success()
         Recorder.register(c)
         if (!Recorder.hasFine(c) || TrackingService.running) return Result.success()

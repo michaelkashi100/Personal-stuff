@@ -104,6 +104,7 @@ class MainActivity : ComponentActivity() {
         Recorder.register(this)   // picks up permissions granted in Settings, and re-registers after an update
         Updater.checkAll(this, false)
         notifyWeb()
+        if (UsageSync.granted(this)) Thread { try { UsageSync.sync(this); notifyWeb() } catch (e: Exception) { /* no usage data this time */ } }.start()
     }
 
     override fun onPause() {
@@ -164,7 +165,7 @@ class MainActivity : ComponentActivity() {
         return "{\"native\":true,\"recording\":${Recorder.enabled(this)},\"fine\":${Recorder.hasFine(this)}," +
             "\"bg\":${Recorder.hasBackground(this)},\"activity\":${Recorder.hasActivity(this)}," +
             "\"notifications\":${Recorder.hasNotifications(this)},\"fixes\":${s.count},\"first\":${s.first},\"last\":${s.last}," +
-            "\"bridge\":2,\"build\":${Updater.installedBuild(this)},\"bundle\":${WebBundle.servingBuilt(this)},\"latestBuild\":${Updater.latestBuild}," +
+            "\"bridge\":3,\"usage\":${UsageSync.granted(this)},\"usageSince\":${UsageSync.since(this)},\"build\":${Updater.installedBuild(this)},\"bundle\":${WebBundle.servingBuilt(this)},\"latestBuild\":${Updater.latestBuild}," +
             "\"autoUpdate\":${Updater.auto(this)},\"checking\":${Updater.checking},\"installing\":${Updater.installing},\"updateMsg\":${jsonString(Updater.message)}}"
     }
 
@@ -187,6 +188,8 @@ class MainActivity : ComponentActivity() {
         RecordsJson.write(out, db.fixes(since), db.acts(since), System.currentTimeMillis())
         return out.toString()
     }
+
+    fun screenJson(since: Long): String = ScreenSessions.toJson(Db.get(this).screen(since))
 
     fun exportBackup(): String {
         return try {
@@ -221,6 +224,11 @@ class MainActivity : ComponentActivity() {
 
     fun openSettings(kind: String) {
         runOnUiThread {
+            if (kind == "usage") {
+                try { startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS, Uri.parse("package:$packageName"))) }
+                catch (e: Exception) { try { startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) } catch (e2: Exception) { /* no such page */ } }
+                return@runOnUiThread
+            }
             val intent = if (kind == "battery") Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
             else Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
             try { startActivity(intent) } catch (e: Exception) { /* no such settings page on this phone */ }
@@ -244,6 +252,8 @@ class Bridge(private val activity: MainActivity) {
     @JavascriptInterface fun keepScreenOn(on: Boolean) = activity.setKeepScreenOn(on)
 
     @JavascriptInterface fun openSettings(kind: String) = activity.openSettings(kind)
+
+    @JavascriptInterface fun screenJson(since: Long): String = activity.screenJson(since)
 
     @JavascriptInterface fun exportBackup(): String = activity.exportBackup()
 

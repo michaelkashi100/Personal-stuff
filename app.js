@@ -24,6 +24,25 @@
   const nativeSource = () => ({ name: 'Recorded on this phone', ephemeral: true, text: () => Promise.resolve(String(NATIVE.recordsJson(0))) });
   const savedSource = (e) => ({ name: e.name, text: () => (e.text != null ? Promise.resolve(e.text) : e.blob.text()) });
   let nativeStatus = null, nativeFixes = -1, reloadingNative = false;
+  // Phone use (Android app, "Usage access"): sessions with the screen on, [start, end] in ms, sorted. phoneSince = when the copy began.
+  let phone = [], phoneSince = 0;
+  function loadPhone() {
+    let next = [], since = 0;
+    if (NATIVE && nativeStatus && nativeStatus.bridge >= 3 && nativeStatus.usage) {
+      try { const a = JSON.parse(String(NATIVE.screenJson(0))); if (Array.isArray(a)) { next = a; since = nativeStatus.usageSince || 0; } } catch (e) {}
+    }
+    const changed = next.length !== phone.length || since !== phoneSince || (next.length > 0 && next[next.length - 1][1] !== phone[phone.length - 1][1]);
+    phone = next; phoneSince = since; return changed;
+  }
+  const phoneOn = () => phoneSince > 0;
+  function phoneMs(a, b) {                                     // time with the screen on between a and b
+    if (!phone.length || b <= a) return 0;
+    let lo = 0, hi = phone.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (phone[m][1] <= a) lo = m + 1; else hi = m; }
+    let sum = 0;
+    for (let i = lo; i < phone.length && phone[i][0] < b; i++) sum += Math.max(0, Math.min(b, phone[i][1]) - Math.max(a, phone[i][0]));
+    return sum;
+  }
   const DAY = 86400000;
   const MODE_COLOR = { drive: '#f87171', walk: '#4ade80', run: '#a3e635', bike: '#fbbf24', transit: '#a78bfa', flight: '#fb923c', other: '#94a3b8' };
   const MODE_NAME = { drive: 'Driving', walk: 'Walking', run: 'Running', bike: 'Cycling', transit: 'Transit', flight: 'Flying', other: 'Moving' };
@@ -59,6 +78,7 @@
     food: '<path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"/><path d="M7 2v20"/><path d="M21 15V2a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/>',
     star: '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>',
     locate: '<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="8"/><path d="M12 1v3"/><path d="M12 20v3"/><path d="M1 12h3"/><path d="M20 12h3"/>',
+    phone: '<rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><path d="M12 18h.01"/>',
     pencil: '<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/>',
     check: '<polyline points="20 6 9 17 4 12"/>',
     trash: '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/>',
@@ -168,7 +188,7 @@
     d.visits.sort((a, b) => a.start - b.start); d.trips.sort((a, b) => a.start - b.start);
     const first = !data;
     if (map) { stop(); map.remove(); map = null; }           // "Change file" / new recordings while the app is open
-    data = d; timeline = tl || TL.analyze(d); places = TL.clusterPlaces(timeline);
+    data = d; timeline = tl || TL.analyze(d); places = TL.clusterPlaces(timeline); loadPhone();
     $('import').style.display = 'none';
     $('app').style.display = 'flex';
     initMap(); initDays(); renderStats();
@@ -257,6 +277,7 @@
   function renderLive() {
     if (!live) return;
     const np = nearPlace();
+    setHudPhone('');
     $('hudDay').textContent = 'Now';
     updateHudEdit(np ? { kind: 'stay', place: np } : { kind: 'move' });
     const nm = np ? (placeLabelText(np) || 'Unnamed place') : '';
@@ -489,7 +510,7 @@
         still += s.t1 - s.t0;
         const r = Math.min(16, 6 + 3 * Math.sqrt((s.t1 - s.t0) / 3.6e6));            // bigger circle = longer stay
         L.circleMarker([s.lat, s.lng], { radius: r, color: '#e2e8f0', weight: 1.5, fillColor: '#e2e8f0', fillOpacity: 0.16 })
-          .bindTooltip(esc(s.name) + ' · ' + clock(s.t0) + '–' + clock(s.t1) + ' (' + fmtDur(s.t1 - s.t0) + ')').addTo(dayLayer);
+          .bindTooltip(esc(s.name) + ' · ' + clock(s.t0) + '–' + clock(s.t1) + ' (' + fmtDur(s.t1 - s.t0) + ')' + (phoneOn() && s.t1 > phoneSince ? ' · ' + fmtDur(phoneMs(Math.max(s.t0, phoneSince), s.t1)) + ' on phone' : '')).addTo(dayLayer);
       }
     }
     trailGlow = L.polyline([], { weight: 13, opacity: 0.22, lineCap: 'round', interactive: false }).addTo(dayLayer);
@@ -511,7 +532,9 @@
         ? `<div class="seg" style="left:${left}%;width:${w}%;background:${s.color}"></div>`
         : `<div class="seg still" style="left:${left}%;width:${w}%">${(s.vlen / V) * px >= 24 ? '<span>' + shortDur(s.t1 - s.t0) + '</span>' : ''}</div>`;
     }).join('');
-    $('summary').innerHTML = !items.length ? '' : chip('clock', 'var(--muted)', fmtDur(still) + ' still') +
+    let stillCov = 0, onPhone = 0;
+    if (phoneOn()) for (const s of items) if (s.kind === 'stay' && s.t1 > phoneSince) { const a = Math.max(s.t0, phoneSince); stillCov += s.t1 - a; onPhone += phoneMs(a, s.t1); }
+    $('summary').innerHTML = !items.length ? '' : chip('clock', 'var(--muted)', fmtDur(still) + ' still') + (stillCov > 0 ? chip('phone', '#a78bfa', fmtDur(onPhone) + ' on phone') : '') +
       Object.entries(byMode).sort((a, b) => b[1] - a[1]).map(([m, d]) => chip(MODE_ICON[m], MODE_COLOR[m], fmtDist(d))).join('');
   }
 
@@ -544,10 +567,13 @@
     if (el) { el.classList.toggle('stay', s.kind === 'stay'); el.classList.toggle('drive', mode === 'drive'); el.classList.toggle('badge-on', !!mode && mode !== 'drive' && mode !== 'other'); }
     if (mode !== badgeMode) { badgeMode = mode; if (badgeEl) { badgeEl.innerHTML = mode ? svg(MODE_ICON[mode]) : ''; badgeEl.style.setProperty('--c', MODE_COLOR[mode] || 'var(--accent)'); } }
     updateHudEdit(s);
+    setHudPhone(s.kind === 'stay' && phoneOn() && s.t1 > phoneSince ? fmtDur(phoneMs(Math.max(s.t0, phoneSince), t)) + ' on phone' : '');
     const sub = s.kind === 'stay' ? s.name + ' · ' + fmtDur((s.t1 - s.t0) * f)
       : s.uncertain ? 'Travelled · no data in between' : MODE_NAME[mode] + ' · ' + Math.round(s.med * 3.6) + ' km/h · ' + (left / 1000).toFixed(1) + ' km left';
     setHud(clock(t), sub, s.kind === 'stay' ? 'pin' : MODE_ICON[mode], s.kind === 'stay' ? 'var(--accent)' : MODE_COLOR[mode], s.kind === 'stay' ? [s.lat, s.lng] : null);
   }
+  let phoneTxt = null;
+  function setHudPhone(txt) { if (txt === phoneTxt) return; phoneTxt = txt; const el = $('hudPhone'); el.hidden = !txt; el.innerHTML = txt ? svg('phone') + '<span>' + esc(txt) + '</span>' : ''; }
   let thumbKey = '';
   function setHud(a, b, icon, color, thumb) {
     const tk = thumb ? thumb[0].toFixed(5) + ',' + thumb[1].toFixed(5) : '';
@@ -887,6 +913,7 @@
     const st = nat('status'); if (!st) return;
     const prev = nativeFixes; nativeStatus = st; nativeFixes = st.fixes;
     renderRecording(); renderUpdates();
+    if (data && loadPhone() && !playing && $('ask').hidden) { refreshDay(); renderStats(); }
     if (!data) { if (st.fixes > 0) reloadSources(); else $('status').textContent = recState(st).key === 'on' ? 'Recording is on. Your first trip appears here after you start moving.' : $('status').textContent; }
     else if (prev >= 0 && st.fixes !== prev && !playing && $('ask').hidden) reloadSources().then(() => toast('Updated with your latest recordings', 2500));
   }
@@ -894,6 +921,24 @@
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshNative(); });
 
   // ---- Insights ----
+  // Time on the phone while standing still (Android app only: it needs "Usage access", the same data Digital Wellbeing uses).
+  function phoneCard(year) {
+    if (!NATIVE) return '';
+    const st = nativeStatus || nat('status') || {};
+    if (!(st.bridge >= 3)) return `<div class="card"><h2>Phone time while still</h2><p class="note" style="margin-top:0">Needs the newest version of the app. Open “App updates” above and install it.</p></div>`;
+    if (!st.usage) return `<div class="card"><h2>Phone time while still</h2><p class="note" style="margin-top:0">See how much of the time you stand still is spent on your phone. Turn on “Usage access” for Timeline in Android settings: it is the same screen-time information Digital Wellbeing uses. Only when the screen was on is kept, never which apps. It stays on this phone.</p><div class="actions"><button class="btn primary" id="usageAllow" type="button">${svg('phone')}Allow usage access</button></div></div>`;
+    let still = 0, used = 0; const per = new Map(), days = new Set();
+    for (const it of timeline) {
+      if (it.kind !== 'stay' || it.t1 <= phoneSince || new Date(it.t0).getFullYear() !== year && new Date(it.t1).getFullYear() !== year) continue;
+      const a = Math.max(it.t0, phoneSince), u = phoneMs(a, it.t1); still += it.t1 - a; used += u;
+      if (u > 0) { days.add(dayKey(a)); if (it.place) { const r = per.get(it.place) || { p: it.place, ms: 0 }; r.ms += u; per.set(it.place, r); } }
+    }
+    const since = new Date(phoneSince).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+    if (still < 60000) return `<div class="card"><h2>Phone time while still</h2><p class="note" style="margin-top:0">Collecting since ${since}. Android keeps only about a week of screen history, so this fills up from now on.</p></div>`;
+    const rows = [...per.values()].sort((a, b) => b.ms - a.ms).slice(0, 5), maxMs = rows.length ? rows[0].ms : 1;
+    const rowHtml = rows.map((r) => { const nm = placeLabelText(r.p), kd = placeKind(r.p); return `<li class="row" style="--c:${kd ? kd.color : 'var(--accent)'}"><span class="ico">${svg(kd ? kd.icon : 'pin')}</span><div class="grow"><div class="top"><b>${nm ? esc(nm) : '<i class="unnamed">Unnamed place</i>'}</b><span>${fmtDur(r.ms)}</span></div><div class="meter"><i style="width:${Math.max(3, (r.ms / maxMs) * 100)}%"></i></div></div></li>`; }).join('');
+    return `<div class="card"><h2>Phone time while still</h2><div class="big num">${fmtDur(used)}<small>on the phone</small></div><p>${Math.round((used / still) * 100)}% of the ${fmtDur(still)} you were still, since ${since}${days.size > 1 ? ' (about ' + fmtDur(used / days.size) + ' on a day with phone use)' : ''}.</p>${rowHtml ? `<ul class="rows">${rowHtml}</ul>` : ''}</div>`;
+  }
   const fmtKm = (v) => (v >= 100 ? Math.round(v).toLocaleString() : v.toFixed(1)) + ' km';
   function renderStats() {
     const el = $('statsView');
@@ -914,6 +959,7 @@
       `<div class="tiles"><div class="tile"><b>${s.activeDays.toLocaleString()}</b><span>active days</span></div><div class="tile"><b>${s.uniquePlaces.toLocaleString()}</b><span>different places</span></div>` +
       (s.longest ? `<div class="tile"><b>${fmtKm(s.longest.dist / 1000).replace(' km', '')}<small style="font-size:13px;color:var(--text-2);font-weight:600"> km</small></b><span>longest ${MODE_NAME[s.longest.mode].toLowerCase()} leg</span></div>` : '') + `</div>` +
       `<div class="card"><h2>How you travelled</h2><ul class="rows">${modeRows || '<li class="empty">No trips yet.</li>'}</ul></div>` +
+      phoneCard(year) +
       `<div class="card"><h2>Your places</h2>${pend ? `<div class="cta"><div class="t"><b>${pend} place${pend > 1 ? 's need' : ' needs'} a name</b><span>A quick question about each.</span></div><button class="btn primary sm" id="askStart" type="button">Start</button></div>` : ''}<ul class="rows">${placeRows || '<li class="empty">No stops yet.</li>'}</ul></div>` +
       `<div class="card"><h2>Playback</h2>` +
       `<div class="setting"><div class="t"><b>Keep screen on</b><span id="awakeNote"></span></div>${sw('swAwake', 'Keep screen on', keepOn)}</div>` +
@@ -933,6 +979,7 @@
       if (!b.classList.contains('armed')) { b.classList.add('armed'); lbl.textContent = 'Tap again to confirm'; clearTimeout(armedT); armedT = setTimeout(() => { b.classList.remove('armed'); lbl.textContent = 'Forget my data'; }, 3500); return; }
       await clearFiles(); try { localStorage.removeItem('tl-places'); localStorage.removeItem('tl-ask-snooze'); } catch (e) {} location.reload();
     };
+    const ua = $('usageAllow'); if (ua) ua.onclick = () => { buzz(); NATIVE.openSettings('usage'); };
     renderRecording(); renderUpdates(); wakeInfo(); dataInfo();
   }
 
