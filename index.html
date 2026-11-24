@@ -170,6 +170,26 @@
   .askpic { margin-top:12px; } .askpic .thumb { display:block; width:100%; }
   #map.locked { touch-action:none; }
   .rows .ign { display:flex; gap:10px; align-items:center; } .rows .ign b { display:block; font-size:14px; font-weight:620; } .rows .ign span { display:block; font-size:12px; color:var(--muted); margin-top:2px; }
+  #labBtn { position:absolute; right:12px; bottom:calc(var(--sheet) + 88px + env(safe-area-inset-bottom)); z-index:1000; background:var(--surface-solid); color:var(--text-2); box-shadow:var(--shadow-1); }
+  #lab { position:fixed; left:0; right:0; bottom:0; z-index:3500; pointer-events:none; }
+  #lab .card { pointer-events:auto; max-width:560px; margin:0 auto; max-height:52vh; overflow:auto; padding:8px 16px calc(14px + env(safe-area-inset-bottom)); background:linear-gradient(180deg,#131c30,#0c1322); border:1px solid var(--line-strong); border-bottom:0; border-radius:22px 22px 0 0; box-shadow:0 -14px 50px rgba(0,0,0,.55); animation:sheetup .28s var(--ease) both; }
+  body.lab-open #controls, body.lab-open #hud, body.lab-open #locate { visibility:hidden; }
+  body.lab-open #map { bottom:52vh; }
+  body.lab-open #labBtn { bottom:calc(52vh + 12px); color:var(--accent); }
+  .lab-h { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:4px 0 10px; }
+  .lab-h h3 { margin:0; font-size:19px; font-weight:720; } .lab-h span { font-size:12.5px; color:var(--muted); }
+  .lab-toggles { display:flex; gap:8px; flex-wrap:wrap; }
+  .chipbtn { height:34px; padding:0 13px; border-radius:999px; font-size:13px; font-weight:600; background:var(--surface-2); border:1px solid var(--line-strong); color:var(--text-2); }
+  .chipbtn[aria-pressed="true"] { background:rgba(92,188,246,.16); border-color:var(--accent); color:var(--text); }
+  .lab-legend { display:flex; align-items:center; gap:8px; margin:12px 0 2px; font-size:11.5px; color:var(--muted); }
+  .lab-legend i { flex:1; height:8px; border-radius:6px; background:linear-gradient(90deg,hsl(0,85%,52%),hsl(60,85%,52%),hsl(120,85%,52%)); }
+  .lab-det { margin:8px 0; padding:10px 12px; border-radius:14px; background:var(--surface-2); border:1px solid var(--line); }
+  .lab-det-h { display:flex; align-items:center; gap:8px; flex-wrap:wrap; } .lab-det-h .dot { width:12px; height:12px; border-radius:50%; } .lab-det-h .t { font-size:12px; color:var(--muted); width:100%; }
+  .lab-parts { list-style:none; padding:0; margin:8px 0 0; display:flex; flex-direction:column; gap:4px; font-size:12.5px; }
+  .lab-parts li { display:flex; justify-content:space-between; gap:10px; color:var(--text-2); } .lab-parts b { font-variant-numeric:tabular-nums; } .lab-parts .pos { color:#4ade80; } .lab-parts .neg { color:#fb7185; }
+  .lab-g { border-top:1px solid var(--line); padding:6px 0; } .lab-g summary { cursor:pointer; font-weight:650; font-size:14px; padding:6px 0; color:var(--text); }
+  .lab-s { display:block; padding:6px 0; } .lab-s > span { display:flex; justify-content:space-between; font-size:13px; color:var(--text-2); } .lab-s b { font-weight:560; } .lab-s output { font-variant-numeric:tabular-nums; color:var(--text); }
+  .lab-s input[type=range] { width:100%; accent-color:var(--accent); height:28px; }
   #locate.on { background:#3b82f6; color:#fff; border-color:transparent; }
   @keyframes pulse { 0% { transform:scale(.5); opacity:.9; } 100% { transform:scale(2.3); opacity:0; } }
 
@@ -267,6 +287,7 @@
 <div id="toast" role="status" aria-live="polite"></div>
 
 <div id="ask" hidden role="dialog" aria-labelledby="askTitle"><div class="card"></div></div>
+<div id="lab" hidden role="dialog" aria-label="Path lab"><div class="card"></div></div>
 
 <section id="import">
   <div class="hero">
@@ -298,6 +319,7 @@
     <div id="mapView">
       <div id="map"></div>
       <div id="hud" aria-live="off"><div id="hudTop"><div id="hudDay"></div><button id="hudEdit" type="button" hidden><span data-icon="pencil"></span><span class="lbl"></span></button></div><div id="hudTime">--:--</div><div id="hudRow"><span id="hudIcon"></span><span id="hudSub"></span></div><div id="hudPhone" hidden></div><div id="hudThumb" hidden></div></div>
+      <button id="labBtn" class="iconbtn" type="button" aria-label="Path lab: raw GPS, confidence and settings"><span data-icon="sliders"></span></button>
       <button id="locate" class="iconbtn" type="button" aria-label="Show my location"><span data-icon="locate"></span></button>
       <div id="dayBanner" aria-hidden="true"><b></b><span></span></div>
       <div id="controls">

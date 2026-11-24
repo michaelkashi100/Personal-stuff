@@ -79,6 +79,7 @@
     star: '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>',
     locate: '<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="8"/><path d="M12 1v3"/><path d="M12 20v3"/><path d="M1 12h3"/><path d="M20 12h3"/>',
     phone: '<rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><path d="M12 18h.01"/>',
+    sliders: '<line x1="4" x2="4" y1="21" y2="14"/><line x1="4" x2="4" y1="10" y2="3"/><line x1="12" x2="12" y1="21" y2="12"/><line x1="12" x2="12" y1="8" y2="3"/><line x1="20" x2="20" y1="21" y2="16"/><line x1="20" x2="20" y1="12" y2="3"/><line x1="2" x2="6" y1="14" y2="14"/><line x1="10" x2="14" y1="8" y2="8"/><line x1="18" x2="22" y1="16" y2="16"/>',
     pencil: '<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/>',
     check: '<polyline points="20 6 9 17 4 12"/>',
     trash: '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/>',
@@ -701,16 +702,126 @@
     }, { passive: true });
   })();
 
+
+  // ---- Path lab: the raw GPS, each fix's confidence, the likely path, and the settings behind them, live ----
+  const LAB_PART = { prior: 'Starting point (how often GPS jumps here)', fit: 'Distance from the path the other fixes describe', turn: 'Turn / out-and-back', speed: 'Speed (could you get here and back?)', accel: 'Acceleration', signal: 'Signal quality', alt: 'Altitude', build: 'Buildings', fam: 'Usual route' };
+  const LAB_WHY = { never: 'Ignored: a country you are never in (GPS interference).', abroad: 'Ignored: abroad, but too short or sudden to be a real trip.', wifi: 'Same Wi-Fi network: you were not moving, this fix wandered off.' };
+  let lab = null, labFixes = null, labDataRef = null;
+  const confColor = (c) => { const h = Math.round(120 * Math.max(0, Math.min(1, c))); return 'hsl(' + h + ',85%,52%)'; };
+  function labAllFixes() {                                     // every fix of the loaded data, once per data set
+    if (labDataRef !== data) { labDataRef = data; labFixes = TL.collectFixes(data).filter((f) => f.acc <= TL.CFG.maxAcc); }
+    return labFixes;
+  }
+  function labDayFixes(d) {
+    const all = labAllFixes(), a = d - 30 * 60000, b = d + DAY + 30 * 60000;
+    let lo = 0, hi = all.length; while (lo < hi) { const m = (lo + hi) >> 1; if (all[m].t < a) lo = m + 1; else hi = m; }
+    const out = []; for (let i = lo; i < all.length && all[i].t <= b; i++) out.push(all[i]);
+    return out;
+  }
+  function openLab() {
+    if (!data || curDay == null) return;
+    stop(); leaveLive(); buzz();
+    const saved = readLS('tl-clean', {});
+    lab = { P: Object.assign({}, TL.cleanApi.DEFAULTS, saved), saved: JSON.stringify(saved), show: { raw: true, path: true, dots: true }, layer: L.layerGroup(), canvas: L.canvas({ padding: 0.5 }), sel: null };
+    map.removeLayer(dayLayer); lab.layer.addTo(map);
+    $('lab').hidden = false; document.body.classList.add('lab-open'); map.invalidateSize();
+    renderLabPanel(); runLab(true);
+  }
+  function closeLab() {
+    if (!lab) return;
+    lab.layer.remove(); if (map.hasLayer(lab.canvas)) map.removeLayer(lab.canvas);   // also cancels a pending canvas redraw
+    dayLayer.addTo(map); lab = null;
+    $('lab').hidden = true; document.body.classList.remove('lab-open');
+    map.invalidateSize(); seek(frac);
+  }
+  function runLab(fit) {
+    if (!lab) return;
+    const F = labDayFixes(curDay), t0 = performance.now();
+    const today = dayKey(Date.now()) === curDay;
+    const res = F.length ? TL.cleanApi.clean(F, { params: lab.P, trusted: readLS('tl-trust', []), placeWifi: readLS('tl-wifi', []), live: today && !!NATIVE }) : null;
+    lab.F = F; lab.res = res; lab.ms = performance.now() - t0;
+    drawLab(fit); labStats();
+  }
+  function drawLab(fit) {
+    const g = lab.layer; g.clearLayers();
+    const F = lab.F, res = lab.res; if (!res) return;
+    const raw = [], keepPath = [], tent = [];
+    for (let i = 0; i < F.length; i++) {
+      if (res.why[i] === 'never' || res.why[i] === 'abroad') continue;     // far away: not drawn on this map
+      raw.push([F[i].lat, F[i].lng]);
+      if (res.route[i] && res.c[i] >= res.P.keep) (i >= res.tentativeFrom ? tent : keepPath).push(res.route[i]);
+    }
+    if (tent.length && keepPath.length) tent.unshift(keepPath[keepPath.length - 1]);
+    if (lab.show.raw) L.polyline(raw, { color: '#94a3b8', weight: 1.5, opacity: 0.7, interactive: false }).addTo(g);
+    if (lab.show.path) {
+      L.polyline(keepPath, { color: '#0b1220', weight: 7, opacity: 0.55, interactive: false }).addTo(g);
+      L.polyline(keepPath, { color: '#5cbcf6', weight: 4, opacity: 1, interactive: false }).addTo(g);
+      if (tent.length > 1) L.polyline(tent, { color: '#5cbcf6', weight: 4, opacity: 0.9, dashArray: '6 7', interactive: false }).addTo(g);
+    }
+    if (lab.show.dots) for (let i = 0; i < F.length; i++) {
+      if (res.why[i] === 'never' || res.why[i] === 'abroad') continue;
+      const m = L.circleMarker([F[i].lat, F[i].lng], { renderer: lab.canvas, radius: i === lab.sel ? 8 : 4.5, color: '#0b1220', weight: 1, fillColor: confColor(res.c[i]), fillOpacity: 0.95 });
+      m.on('click', () => { lab.sel = i; drawLab(false); labDetail(i); });
+      m.addTo(g);
+    }
+    if (fit && raw.length) map.fitBounds(L.latLngBounds(raw), { padding: [30, 30] });
+  }
+  function labStats() {
+    const el = $('labStats'); if (!el || !lab.res) { if (el) el.textContent = 'No GPS fixes on this day.'; return; }
+    const r = lab.res; let doubt = 0, ign = 0, low = 0;
+    for (let i = 0; i < lab.F.length; i++) { if (r.why[i] === 'never' || r.why[i] === 'abroad') ign++; else if (r.c[i] < 0.5) doubt++; if (r.c[i] < r.P.keep) low++; }
+    el.textContent = lab.F.length + ' fixes · ' + doubt + ' doubted' + (ign ? ' · ' + ign + ' ignored (impossible place)' : '') + ' · ' + low + ' left out · ' + Math.round(lab.ms) + ' ms';
+  }
+  function labDetail(i) {
+    const el = $('labDetail'), r = lab.res, f = lab.F[i], parts = r.parts[i];
+    const rows = parts ? Object.entries(parts).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).map(([k, v]) => `<li><span>${LAB_PART[k]}</span><b class="${v >= 0 ? 'pos' : 'neg'}">${v >= 0 ? '+' : ''}${v.toFixed(1)}</b></li>`).join('') : '';
+    el.innerHTML = `<div class="lab-det"><div class="lab-det-h"><span class="dot" style="background:${confColor(r.c[i])}"></span><b>${Math.round(r.c[i] * 100)}% sure this is real</b><span class="t">${clock(f.t)} · ±${Math.round(f.acc)} m${f.src ? ' · ' + f.src.toUpperCase() : ''}${f.alt != null ? ' · ' + Math.round(f.alt) + ' m high' : ''}</span></div>` +
+      (r.why[i] && LAB_WHY[r.why[i]] ? `<p class="note">${LAB_WHY[r.why[i]]}</p>` : '') +
+      (rows ? `<ul class="lab-parts">${rows}</ul><p class="note">Positive numbers say "looks real", negative "looks like a jump". Added together they give the confidence.</p>` : '') + '</div>';
+    el.hidden = false;
+  }
+  function renderLabPanel() {
+    const S = TL.cleanApi.SLIDERS, groups = [];
+    for (const s of S) { let g = groups.find((x) => x.name === s[5]); if (!g) groups.push(g = { name: s[5], items: [] }); g.items.push(s); }
+    const dec = (st) => (st >= 1 ? 0 : st >= 0.1 ? 1 : 2);
+    const fmtv = (v, st) => Number(v).toFixed(dec(st));
+    $('lab').querySelector('.card').innerHTML =
+      `<div class="grab"></div><div class="lab-h"><div><h3>Path lab</h3><span>${dayLabel(curDay, { weekday: 'short', day: 'numeric', month: 'short' })}</span></div><button class="iconbtn" id="labClose" type="button" aria-label="Close the Path lab">${svg('check')}</button></div>` +
+      `<div class="lab-toggles">${[['raw', 'Raw GPS'], ['path', 'Likely path'], ['dots', 'Confidence']].map(([k, t]) => `<button type="button" class="chipbtn" data-show="${k}" aria-pressed="${lab.show[k]}">${t}</button>`).join('')}</div>` +
+      `<div class="lab-legend"><span>jump</span><i></i><span>real</span></div><p class="note" id="labStats"></p><div id="labDetail" hidden></div>` +
+      groups.map((g) => `<details class="lab-g"${g.name === 'Decision' ? ' open' : ''}><summary>${g.name}</summary>` + g.items.map(([key, label, min, max, st]) =>
+        `<label class="lab-s"><span><b>${label}</b><output id="lv_${key}">${fmtv(lab.P[key], st)}</output></span><input type="range" min="${min}" max="${max}" step="${st}" value="${lab.P[key]}" data-key="${key}" data-st="${st}" aria-label="${label}"></label>`).join('') + '</details>').join('') +
+      `<div class="actions"><button class="btn" id="labReset" type="button">${svg('refresh')}Defaults</button><button class="btn primary" id="labApply" type="button">${svg('check')}Use everywhere</button></div>` +
+      `<p class="note">Changes here only affect this view until you tap “Use everywhere”.</p>`;
+    let t = 0;
+    $('lab').querySelectorAll('input[type=range]').forEach((inp) => (inp.oninput = () => {
+      lab.P[inp.dataset.key] = +inp.value; $('lv_' + inp.dataset.key).textContent = fmtv(inp.value, +inp.dataset.st);
+      clearTimeout(t); t = setTimeout(() => { runLab(false); if (lab.sel != null && lab.sel < lab.F.length) labDetail(lab.sel); }, 90);
+    }));
+    $('lab').querySelectorAll('[data-show]').forEach((b) => (b.onclick = () => { lab.show[b.dataset.show] = !lab.show[b.dataset.show]; b.setAttribute('aria-pressed', String(lab.show[b.dataset.show])); drawLab(false); }));
+    $('labClose').onclick = closeLab;
+    $('labReset').onclick = () => { lab.P = Object.assign({}, TL.cleanApi.DEFAULTS); renderLabPanel(); runLab(false); toast('Back to the default settings (not saved yet)', 2200); };
+    $('labApply').onclick = () => {
+      const diff = {}; for (const k in lab.P) if (lab.P[k] !== TL.cleanApi.DEFAULTS[k]) diff[k] = lab.P[k];
+      writeLS('tl-clean', diff); buzz(); closeLab(); reanalyze('Saved. Every day now uses these settings.');
+    };
+  }
+  $('labBtn').onclick = () => (lab ? closeLab() : openLab());
+  swipeOn($('lab'), { down: () => { const c = $('lab').querySelector('.card'); if (c.scrollTop < 4) closeLab(); } }, (e) => !e.target.closest('input,details'));
+
   // Rotating the phone / resizing: the map needs to know, and in live mode it stays centred on you.
   let resizeT = 0;
   window.addEventListener('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(() => { if (!map) return; map.invalidateSize(); if (live && follow) flyMe(); else if (!live && scenes.items.length) seek(frac); }, 150); });
   // The Back button (Android app): close what is open first, then leave the replay for the live map, and only then leave the app.
   window.__tlBack = () => {
+    if (lab) { closeLab(); return true; }
     if (!$('ask').hidden) { const b = $('askLater'); if (b) b.click(); else closeAsk(); return true; }
     if (document.body.classList.contains('on-stats')) { showTab('map'); return true; }
     if (!live && data) { goLive(); return true; }
     return false;
   };
+  window.__tlPt = (lat, lng) => { const q = map.latLngToContainerPoint([lat, lng]), r = $('map').getBoundingClientRect(); return { x: r.left + q.x, y: r.top + q.y }; };   // test hook
+  window.__tlLab = () => (lab && lab.res ? { n: lab.F.length, sel: lab.sel, c: Array.from(lab.res.c), why: lab.res.why, fixes: lab.F.map((f) => [f.lat, f.lng]) } : null);   // test hook (read-only)
   window.__tl = () => { const el = marker && marker.getElement(), cur = scenes.items.length ? locate(frac * scenes.V).s : null; return { zoom: map.getZoom(), heading, frac, V: scenes.V, items: scenes.items.map((s) => (s.kind === 'move' ? s.mode : 'stay')), cur: cur ? (cur.kind === 'move' ? cur.mode : 'stay') : null, car: !!(el && el.classList.contains('drive')), timeline: timeline.length, day: curDay, playing, dragging: !!(map && map.dragging.enabled()), live, follow, zoomBias, speed, centre: map ? [map.getCenter().lat, map.getCenter().lng] : null, me }; };   // test hook (read-only)
 
   async function dataInfo() {
