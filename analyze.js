@@ -9,6 +9,7 @@
 //   5. tidy      short stops inside a drive (traffic) are not arrivals; stays are named from Google's visits
 (function (root) {
   const P = typeof module !== 'undefined' ? require('./parser.js') : root.TL;
+  const CL = typeof module !== 'undefined' ? require('./clean.js') : root.TL.cleanApi;
   const RAD = Math.PI / 180;
   const d4 = (la1, ln1, la2, ln2) => {
     const dLat = (la2 - la1) * RAD, dLng = (ln2 - ln1) * RAD;
@@ -44,7 +45,7 @@
   // ---------- 1. collect ----------
   function collect(data) {
     const F = [], pts = data.points.filter((p) => p.t === p.t);
-    for (const p of pts) F.push({ t: p.t, lat: p.lat, lng: p.lng, acc: p.acc > 0 ? p.acc : 20, v: p.v });
+    for (const p of pts) F.push(Object.assign({}, p, { acc: p.acc > 0 ? p.acc : 20 }));
     const times = pts.map((p) => p.t).sort((a, b) => a - b);
     const gapTo = (t) => {                                     // ms to the nearest dense fix
       let lo = 0, hi = times.length;
@@ -221,6 +222,7 @@
   function legsFrom(pts, hints, head, tail) {                      // pts: timed fixes of one stretch of movement
     // head / tail: the stay centres at either end. They only extend the drawn path; their positions are
     // averages, so using them for speeds would invent speed spikes right where a stay starts or ends.
+    pts = pts.map((p) => (p.sla != null ? Object.assign({}, p, { lat: p.sla, lng: p.slg }) : p));   // the likely path (clean.js)
     if (pts.length < 2) { pts = [head].concat(pts, [tail]).filter(Boolean); head = tail = null; }
     if (pts.length < 2) return [];
     const sm = smoothPts(pts), v = speedsOf(sm), wins = makeWindows(sm, v);
@@ -276,9 +278,32 @@
   }
 
   // ---------- main ----------
-  function analyze(data) {
-    const F = despike(collect(data).filter((f) => f.acc <= CFG.maxAcc));
-    if (F.length < 2) return [];
+  // Cleaning (clean.js): every fix gets a confidence; the likely path replaces the raw positions; fixes below the
+  // "leave out" level, and places you are never at, are dropped. Returns the fixes the rest of the analysis uses.
+  function cleanFixes(all, opts) {
+    const o = Object.assign({ noParts: true }, opts || {});
+    let res = CL.clean(all, o);
+    if (!o.familiar && all.length < 300000 && all.length > 1 && all[all.length - 1].t - all[0].t > 2 * 86400000) {
+      o.familiar = CL.familiarity(all, res);                  // usual routes: a second pass that knows them
+      res = CL.clean(all, o);
+    }
+    const keep = res.P.keep, F = [], removed = [];
+    for (let i = 0; i < all.length; i++) {
+      if (res.why[i] === 'never' || res.why[i] === 'abroad') {
+        const r = removed[removed.length - 1];
+        if (r && r.why === res.why[i] && all[i].t - r.t1 < 3 * 3600000) r.t1 = all[i].t; else removed.push({ t0: all[i].t, t1: all[i].t, why: res.why[i] });
+        continue;
+      }
+      if (res.c[i] < keep || !res.route[i]) continue;
+      F.push(Object.assign({}, all[i], { sla: res.route[i][0], slg: res.route[i][1], c: res.c[i] }));   // stays use the raw scatter, trips the likely path
+    }
+    return { F, removed, res };
+  }
+
+  function analyze(data, opts) {
+    const all = collect(data).filter((f) => f.acc <= CFG.maxAcc);
+    const { F, removed } = cleanFixes(all, opts);
+    if (F.length < 2) return Object.assign([], { removed });
     // Google's own guesses become a soft prior: activity labels and per-fix activity records
     const hints = [];
     for (const h of data.hints || []) { const m = labelMode(h.type); if (m) hints.push({ t: h.t, mode: m, conf: h.conf }); }
@@ -329,6 +354,28 @@
     let home = null, hb = 3; for (const [c, h] of night) if (h > hb) { hb = h; home = c; }
     for (const it of items) if (it.kind === 'stay' && it.name === 'Stopped' && cell(it) === home) { it.name = 'Home'; it.homeGuess = true; }
     for (const it of items) if (it.kind === 'stay') it.nd = it.t1 - it.t0;
+    // Places you spend a lot of time at: a stay close to one is at it (no back-and-forth inside your own home).
+    const anchors = [];
+    for (const it of items) if (it.kind === 'stay') {
+      let a = anchors.find((x) => d4(x.lat, x.lng, it.lat, it.lng) < 120);
+      if (!a) anchors.push(a = { lat: it.lat, lng: it.lng, ms: 0 });
+      const w = it.t1 - it.t0; a.lat = (a.lat * a.ms + it.lat * w) / (a.ms + w || 1); a.lng = (a.lng * a.ms + it.lng * w) / (a.ms + w || 1); a.ms += w;
+    }
+    for (const it of items) if (it.kind === 'stay') {
+      const a = anchors.find((x) => x.ms >= 6 * 3600000 && d4(x.lat, x.lng, it.lat, it.lng) < 120);
+      if (a) { it.lat = a.lat; it.lng = a.lng; it.anchored = true; }
+    }
+    // the Wi-Fi network you were on during a stay (a scrambled code), so the app can learn which network is which place
+    for (const it of items) if (it.kind === 'stay') {
+      const cnt = new Map(); let lo = 0, hi = F.length;
+      while (lo < hi) { const m = (lo + hi) >> 1; if (F[m].t < it.t0) lo = m + 1; else hi = m; }
+      for (let i = lo; i < F.length && F[i].t <= it.t1; i++) if (F[i].wifiH) cnt.set(F[i].wifiH, (cnt.get(F[i].wifiH) || 0) + 1);
+      let best = null, bn = 2; for (const [h, n] of cnt) if (n > bn) { bn = n; best = h; }
+      if (best) it.wifi = best;
+    }
+    // stretches the GPS put you where you never are: the move across them is "GPS disturbed", not a trip
+    for (const it of items) if (it.kind === 'move' && it.uncertain && removed.some((r) => r.t1 >= it.t0 && r.t0 <= it.t1)) it.reason = 'disturbed';
+    items.removed = removed;
     return items;
   }
 
@@ -387,6 +434,6 @@
     return { totalKm: total / 1000, byModeKm: byMode, visitCount: stays.length, uniquePlaces: places.length, topPlaces: places.slice().sort((a, b) => b.hours - a.hours).slice(0, 5), activeDays: days.size, longest };
   }
 
-  const api = { analyze, statsFromTimeline, clusterPlaces, CFG, labelMode };
+  const api = { cleanFixes, collectFixes: collect, analyze, statsFromTimeline, clusterPlaces, CFG, labelMode };
   if (typeof module !== 'undefined') module.exports = Object.assign(P, api); else Object.assign(P, api);
 })(typeof self !== 'undefined' ? self : this);

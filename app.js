@@ -79,6 +79,7 @@
     star: '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>',
     locate: '<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="8"/><path d="M12 1v3"/><path d="M12 20v3"/><path d="M1 12h3"/><path d="M20 12h3"/>',
     phone: '<rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><path d="M12 18h.01"/>',
+    sliders: '<line x1="4" x2="4" y1="21" y2="14"/><line x1="4" x2="4" y1="10" y2="3"/><line x1="12" x2="12" y1="21" y2="12"/><line x1="12" x2="12" y1="8" y2="3"/><line x1="20" x2="20" y1="21" y2="16"/><line x1="20" x2="20" y1="12" y2="3"/><line x1="2" x2="6" y1="14" y2="14"/><line x1="10" x2="14" y1="8" y2="8"/><line x1="18" x2="22" y1="16" y2="16"/>',
     pencil: '<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/>',
     check: '<polyline points="20 6 9 17 4 12"/>',
     trash: '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/>',
@@ -140,6 +141,27 @@
   const setLoading = (on, msg) => { $('import').classList.toggle('loading', on); if (msg != null) { $('status').textContent = msg; $('status').classList.remove('error'); } };
   const fail = (msg) => { if (data) toast(msg, 9000); else { $('import').style.visibility = 'visible'; setLoading(false); $('status').textContent = msg; $('status').classList.add('error'); } };
   // sources: [{ name, text() }]. Parse everything first; only keep the copy once it parsed fine.
+  // ---- GPS cleaning settings (Path lab), stretches you confirmed, and which Wi-Fi network is which place ----
+  const readLS = (k, d) => { try { const v = JSON.parse(localStorage.getItem(k) || 'null'); return v == null ? d : v; } catch (e) { return d; } };
+  const writeLS = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
+  const cleanOpts = () => ({ params: readLS('tl-clean', {}), trusted: readLS('tl-trust', []), placeWifi: readLS('tl-wifi', []) });
+  function learnWifi(tl) {                                     // a stay on a Wi-Fi network teaches its place that network (scrambled code only)
+    const list = readLS('tl-wifi', []); let changed = false;
+    for (const it of tl) if (it.kind === 'stay' && it.wifi && it.t1 - it.t0 >= 20 * 60000) {
+      let p = list.find((x) => TL.haversine([x.lat, x.lng], [it.lat, it.lng]) < 120);
+      if (!p) { p = { lat: it.lat, lng: it.lng, hashes: [] }; list.push(p); }
+      if (!p.hashes.includes(it.wifi)) { p.hashes = p.hashes.concat(it.wifi).slice(-5); changed = true; }
+    }
+    if (changed) writeLS('tl-wifi', list.slice(-200));
+  }
+  function reanalyze(msg) {                                    // same data, new settings
+    if (!data) return;
+    const fr = frac, d = curDay;
+    start(data, TL.analyze(data, cleanOpts()));
+    if (d != null && dayList.includes(d)) { showDay(d); seek(fr); }
+    if (msg) toast(msg, 2500);
+  }
+
   async function loadFromSources(sources, save) {
     const merged = { visits: [], trips: [], points: [], hints: [] }, keep = [];
     setLoading(true, '');
@@ -159,7 +181,7 @@
       return false;
     }
     let tl;
-    try { $('status').textContent = 'Analyzing your movements…'; await new Promise((r) => setTimeout(r, 30)); tl = TL.analyze(merged); }
+    try { $('status').textContent = 'Analyzing your movements…'; await new Promise((r) => setTimeout(r, 30)); tl = TL.analyze(merged, cleanOpts()); }
     catch (err) { fail('Could not analyse the data: ' + err.message); return false; }
     if (!tl.length) {                                          // nothing to show (yet): say so, and do not save a copy that shows nothing
       if (data) toast('No trips or stops found in that data.', 4000);
@@ -188,7 +210,7 @@
     d.visits.sort((a, b) => a.start - b.start); d.trips.sort((a, b) => a.start - b.start);
     const first = !data;
     if (map) { stop(); map.remove(); map = null; }           // "Change file" / new recordings while the app is open
-    data = d; timeline = tl || TL.analyze(d); places = TL.clusterPlaces(timeline); loadPhone();
+    data = d; timeline = tl || TL.analyze(d, cleanOpts()); places = TL.clusterPlaces(timeline); loadPhone(); learnWifi(timeline);
     $('import').style.display = 'none';
     $('app').style.display = 'flex';
     initMap(); initDays(); renderStats();
@@ -203,6 +225,7 @@
     $('mapView').style.display = b.dataset.v === 'map' ? 'block' : 'none';
     $('statsView').style.display = b.dataset.v === 'stats' ? 'block' : 'none';
     syncLoc();
+    if (b.dataset.v === 'stats') osmInfo();
     if (b.dataset.v === 'map') { map.invalidateSize(); if (scenes.items.length) seek(frac); if (live) { setFollow(true); flyMe(); } }   // re-frame the camera: it was sized while hidden
   }));
 
@@ -308,7 +331,7 @@
       }, (err) => {
         if (err && err.code === 1) {                             // denied: stop and say so
           if (meWatch != null) { navigator.geolocation.clearWatch(meWatch); meWatch = null; }
-          if (!meDenied) { meDenied = true; toast('Allow location to see where you are on the map.', 5000); if (live) renderLive(); }
+          if (!meDenied) { meDenied = true; if (meAsked) toast('Allow location to see where you are on the map.', 5000); if (live) renderLive(); }   // the HUD already says it; a toast only when you asked
         } else if (meWatch != null) {                            // a temporary gap (no signal, timeout): start a fresh watch shortly
           navigator.geolocation.clearWatch(meWatch); meWatch = null;
           setTimeout(syncLoc, 1000);
@@ -317,7 +340,8 @@
     } catch (e) { meWatch = null; }
   }
   document.addEventListener('visibilitychange', () => { syncLoc(); if (document.visibilityState === 'visible' && live) { setFollow(true); flyMe(); } });
-  $('locate').onclick = () => { buzz(); goLive(); };
+  let meAsked = false;
+  $('locate').onclick = () => { buzz(); meAsked = true; if (meDenied) toast('Allow location to see where you are on the map.', 5000); goLive(); };
 
   const dayKey = (t) => { const d = new Date(t); return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime(); };
   let dayList = [], dayTrips = new Map(), curDay = null, speed = 1, autoNext = true, keepOn = true, wake = null;
@@ -408,7 +432,7 @@
   function moveScene(m) {
     const cum = [0];
     for (let i = 1; i < m.path.length; i++) cum.push(cum[i - 1] + TL.haversine(m.path[i - 1], m.path[i]));
-    return { kind: 'move', t0: m.t0, t1: m.t1, mode: m.mode, uncertain: !!m.uncertain, color: MODE_COLOR[m.mode] || MODE_COLOR.other, med: m.med, path: m.path, times: m.times, cum, len: cum[cum.length - 1], bounds: L.latLngBounds(m.path) };
+    return { kind: 'move', t0: m.t0, t1: m.t1, mode: m.mode, uncertain: !!m.uncertain, reason: m.reason || '', color: MODE_COLOR[m.mode] || MODE_COLOR.other, med: m.med, path: m.path, times: m.times, cum, len: cum[cum.length - 1], bounds: L.latLngBounds(m.path) };
   }
   // Point (and segment index) at a distance along a leg; binary search over cumulative distance.
   function pointAt(s, d) {
@@ -520,6 +544,7 @@
     carEl = marker.getElement().querySelector('.carwrap'); badgeEl = marker.getElement().querySelector('.badge');
     renderBar(items, byMode, still);
     $('scrub').value = 0; seek(0);
+    setTimeout(() => { if (curDay === d && !playing) refineDay(d); }, 400);
   }
 
   // Timeline bar: coloured blocks = movement by mode, hatched blocks = time spent still (with its duration).
@@ -569,7 +594,7 @@
     updateHudEdit(s);
     setHudPhone(s.kind === 'stay' && phoneOn() && s.t1 > phoneSince ? fmtDur(phoneMs(Math.max(s.t0, phoneSince), t)) + ' on phone' : '');
     const sub = s.kind === 'stay' ? s.name + ' · ' + fmtDur((s.t1 - s.t0) * f)
-      : s.uncertain ? 'Travelled · no data in between' : MODE_NAME[mode] + ' · ' + Math.round(s.med * 3.6) + ' km/h · ' + (left / 1000).toFixed(1) + ' km left';
+      : s.uncertain ? (s.reason === 'disturbed' ? 'GPS disturbed · position ignored' : 'Travelled · no data in between') : MODE_NAME[mode] + ' · ' + Math.round(s.med * 3.6) + ' km/h · ' + (left / 1000).toFixed(1) + ' km left';
     setHud(clock(t), sub, s.kind === 'stay' ? 'pin' : MODE_ICON[mode], s.kind === 'stay' ? 'var(--accent)' : MODE_COLOR[mode], s.kind === 'stay' ? [s.lat, s.lng] : null);
   }
   let phoneTxt = null;
@@ -680,16 +705,182 @@
     }, { passive: true });
   })();
 
+
+  // ---- Path lab: the raw GPS, each fix's confidence, the likely path, and the settings behind them, live ----
+  const LAB_PART = { prior: 'Starting point (how often GPS jumps here)', fit: 'Distance from the path the other fixes describe', turn: 'Turn / out-and-back', speed: 'Speed (could you get here and back?)', accel: 'Acceleration', signal: 'Signal quality', alt: 'Altitude', build: 'Buildings', fam: 'Usual route' };
+  const LAB_WHY = { never: 'Ignored: a country you are never in (GPS interference).', abroad: 'Ignored: abroad, but too short or sudden to be a real trip.', wifi: 'Same Wi-Fi network: you were not moving, this fix wandered off.' };
+  let lab = null, labFixes = null, labDataRef = null;
+  const confColor = (c) => { const h = Math.round(120 * Math.max(0, Math.min(1, c))); return 'hsl(' + h + ',85%,52%)'; };
+  function labAllFixes() {                                     // every fix of the loaded data, once per data set
+    if (labDataRef !== data) { labDataRef = data; labFixes = TL.collectFixes(data).filter((f) => f.acc <= TL.CFG.maxAcc); }
+    return labFixes;
+  }
+  function labDayFixes(d) {
+    const all = labAllFixes(), a = d - 30 * 60000, b = d + DAY + 30 * 60000;
+    let lo = 0, hi = all.length; while (lo < hi) { const m = (lo + hi) >> 1; if (all[m].t < a) lo = m + 1; else hi = m; }
+    const out = []; for (let i = lo; i < all.length && all[i].t <= b; i++) out.push(all[i]);
+    return out;
+  }
+  function openLab() {
+    if (!data || curDay == null) return;
+    stop(); leaveLive(); buzz();
+    const saved = readLS('tl-clean', {});
+    lab = { P: Object.assign({}, TL.cleanApi.DEFAULTS, saved), saved: JSON.stringify(saved), show: { raw: true, path: true, dots: true }, layer: L.layerGroup(), canvas: L.canvas({ padding: 0.5 }), sel: null };
+    map.removeLayer(dayLayer); lab.layer.addTo(map);
+    $('lab').hidden = false; document.body.classList.add('lab-open'); map.invalidateSize();
+    renderLabPanel(); runLab(true);
+    if (TL.osm && osmOn() && lab.res) {                         // buildings for this day, then decide again with them
+      const L0 = lab, pts = []; for (let i = 0; i < lab.F.length; i++) if (!lab.res.still[i] && lab.res.route[i] && lab.res.c[i] >= lab.res.P.keep) pts.push(lab.res.route[i]);
+      const st = $('labStats'); if (st && pts.length) st.textContent += ' · loading buildings…';
+      TL.osm.indexFor(pts, { onError: () => {} }).then((idx) => { if (lab !== L0) return; lab.idx = idx; runLab(false); if (!idx && pts.length) { const e = $('labStats'); if (e) e.textContent += ' · no building data (offline?)'; } }).catch(() => {});
+    }
+  }
+  function closeLab() {
+    if (!lab) return;
+    lab.layer.remove(); if (map.hasLayer(lab.canvas)) map.removeLayer(lab.canvas);   // also cancels a pending canvas redraw
+    dayLayer.addTo(map); lab = null;
+    $('lab').hidden = true; document.body.classList.remove('lab-open');
+    map.invalidateSize(); seek(frac);
+  }
+  function runLab(fit) {
+    if (!lab) return;
+    const F = labDayFixes(curDay), t0 = performance.now();
+    const today = dayKey(Date.now()) === curDay;
+    const res = F.length ? TL.cleanApi.clean(F, { params: lab.P, trusted: readLS('tl-trust', []), placeWifi: readLS('tl-wifi', []), live: today && !!NATIVE, buildings: lab.idx || undefined }) : null;
+    if (res && lab.idx) TL.osm.refinePath(res.route, lab.idx, res.still, res.P);
+    lab.F = F; lab.res = res; lab.ms = performance.now() - t0;
+    drawLab(fit); labStats();
+  }
+  function drawLab(fit) {
+    const g = lab.layer; g.clearLayers();
+    const F = lab.F, res = lab.res; if (!res) return;
+    const raw = [], keepPath = [], tent = [];
+    for (let i = 0; i < F.length; i++) {
+      if (res.why[i] === 'never' || res.why[i] === 'abroad') continue;     // far away: not drawn on this map
+      raw.push([F[i].lat, F[i].lng]);
+      if (res.route[i] && res.c[i] >= res.P.keep) (i >= res.tentativeFrom ? tent : keepPath).push(res.route[i]);
+    }
+    if (tent.length && keepPath.length) tent.unshift(keepPath[keepPath.length - 1]);
+    if (lab.show.raw) L.polyline(raw, { color: '#94a3b8', weight: 1.5, opacity: 0.7, interactive: false }).addTo(g);
+    if (lab.show.path) {
+      L.polyline(keepPath, { color: '#0b1220', weight: 7, opacity: 0.55, interactive: false }).addTo(g);
+      L.polyline(keepPath, { color: '#5cbcf6', weight: 4, opacity: 1, interactive: false }).addTo(g);
+      if (tent.length > 1) L.polyline(tent, { color: '#5cbcf6', weight: 4, opacity: 0.9, dashArray: '6 7', interactive: false }).addTo(g);
+    }
+    if (lab.show.dots) for (let i = 0; i < F.length; i++) {
+      if (res.why[i] === 'never' || res.why[i] === 'abroad') continue;
+      const m = L.circleMarker([F[i].lat, F[i].lng], { renderer: lab.canvas, radius: i === lab.sel ? 8 : 4.5, color: '#0b1220', weight: 1, fillColor: confColor(res.c[i]), fillOpacity: 0.95 });
+      m.on('click', () => { lab.sel = i; drawLab(false); labDetail(i); });
+      m.addTo(g);
+    }
+    if (fit && raw.length) map.fitBounds(L.latLngBounds(raw), { padding: [30, 30] });
+  }
+  function labStats() {
+    const el = $('labStats'); if (!el || !lab.res) { if (el) el.textContent = 'No GPS fixes on this day.'; return; }
+    const r = lab.res; let doubt = 0, ign = 0, low = 0;
+    for (let i = 0; i < lab.F.length; i++) { if (r.why[i] === 'never' || r.why[i] === 'abroad') ign++; else if (r.c[i] < 0.5) doubt++; if (r.c[i] < r.P.keep) low++; }
+    el.textContent = lab.F.length + ' fixes · ' + doubt + ' doubted' + (ign ? ' · ' + ign + ' ignored (impossible place)' : '') + ' · ' + low + ' left out' + (lab.idx ? ' · ' + lab.idx.buildings + ' buildings' : '') + ' · ' + Math.round(lab.ms) + ' ms';
+  }
+  function labDetail(i) {
+    const el = $('labDetail'), r = lab.res, f = lab.F[i], parts = r.parts[i];
+    const rows = parts ? Object.entries(parts).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).map(([k, v]) => `<li><span>${LAB_PART[k]}</span><b class="${v >= 0 ? 'pos' : 'neg'}">${v >= 0 ? '+' : ''}${v.toFixed(1)}</b></li>`).join('') : '';
+    el.innerHTML = `<div class="lab-det"><div class="lab-det-h"><span class="dot" style="background:${confColor(r.c[i])}"></span><b>${Math.round(r.c[i] * 100)}% sure this is real</b><span class="t">${clock(f.t)} · ±${Math.round(f.acc)} m${f.src ? ' · ' + f.src.toUpperCase() : ''}${f.alt != null ? ' · ' + Math.round(f.alt) + ' m high' : ''}</span></div>` +
+      (r.why[i] && LAB_WHY[r.why[i]] ? `<p class="note">${LAB_WHY[r.why[i]]}</p>` : '') +
+      (rows ? `<ul class="lab-parts">${rows}</ul><p class="note">Positive numbers say "looks real", negative "looks like a jump". Added together they give the confidence.</p>` : '') + '</div>';
+    el.hidden = false;
+  }
+  function renderLabPanel() {
+    const S = TL.cleanApi.SLIDERS, groups = [];
+    for (const s of S) { let g = groups.find((x) => x.name === s[5]); if (!g) groups.push(g = { name: s[5], items: [] }); g.items.push(s); }
+    const dec = (st) => (st >= 1 ? 0 : st >= 0.1 ? 1 : 2);
+    const fmtv = (v, st) => Number(v).toFixed(dec(st));
+    $('lab').querySelector('.card').innerHTML =
+      `<div class="grab"></div><div class="lab-h"><div><h3>Path lab</h3><span>${dayLabel(curDay, { weekday: 'short', day: 'numeric', month: 'short' })}</span></div><button class="iconbtn" id="labClose" type="button" aria-label="Close the Path lab">${svg('check')}</button></div>` +
+      `<div class="lab-toggles">${[['raw', 'Raw GPS'], ['path', 'Likely path'], ['dots', 'Confidence']].map(([k, t]) => `<button type="button" class="chipbtn" data-show="${k}" aria-pressed="${lab.show[k]}">${t}</button>`).join('')}</div>` +
+      `<div class="lab-legend"><span>jump</span><i></i><span>real</span></div><p class="note" id="labStats"></p><div id="labDetail" hidden></div>` +
+      groups.map((g) => `<details class="lab-g"${g.name === 'Decision' ? ' open' : ''}><summary>${g.name}</summary>` + g.items.map(([key, label, min, max, st]) =>
+        `<label class="lab-s"><span><b>${label}</b><output id="lv_${key}">${fmtv(lab.P[key], st)}</output></span><input type="range" min="${min}" max="${max}" step="${st}" value="${lab.P[key]}" data-key="${key}" data-st="${st}" aria-label="${label}"></label>`).join('') + '</details>').join('') +
+      `<div class="actions"><button class="btn" id="labReset" type="button">${svg('refresh')}Defaults</button><button class="btn primary" id="labApply" type="button">${svg('check')}Use everywhere</button></div>` +
+      `<p class="note">Changes here only affect this view until you tap “Use everywhere”.</p>`;
+    let t = 0;
+    $('lab').querySelectorAll('input[type=range]').forEach((inp) => (inp.oninput = () => {
+      lab.P[inp.dataset.key] = +inp.value; $('lv_' + inp.dataset.key).textContent = fmtv(inp.value, +inp.dataset.st);
+      clearTimeout(t); t = setTimeout(() => { runLab(false); if (lab.sel != null && lab.sel < lab.F.length) labDetail(lab.sel); }, 90);
+    }));
+    $('lab').querySelectorAll('[data-show]').forEach((b) => (b.onclick = () => { lab.show[b.dataset.show] = !lab.show[b.dataset.show]; b.setAttribute('aria-pressed', String(lab.show[b.dataset.show])); drawLab(false); }));
+    $('labClose').onclick = closeLab;
+    $('labReset').onclick = () => { lab.P = Object.assign({}, TL.cleanApi.DEFAULTS); renderLabPanel(); runLab(false); toast('Back to the default settings (not saved yet)', 2200); };
+    $('labApply').onclick = () => {
+      const diff = {}; for (const k in lab.P) if (lab.P[k] !== TL.cleanApi.DEFAULTS[k]) diff[k] = lab.P[k];
+      writeLS('tl-clean', diff); buzz(); closeLab(); reanalyze('Saved. Every day now uses these settings.');
+    };
+  }
+  $('labBtn').onclick = () => (lab ? closeLab() : openLab());
+  swipeOn($('lab'), { down: () => { const c = $('lab').querySelector('.card'); if (c.scrollTop < 4) closeLab(); } }, (e) => !e.target.closest('input,details'));
+
+
+  // ---- Buildings & streets (OpenStreetMap) for the likely path of the day you look at ----
+  const osmOn = () => readLS('tl-osm', true) !== false;
+  const hashStr = (s) => { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); };
+  const refining = new Set();
+  async function refineDay(d) {
+    if (!TL.osm || !data || refining.has(d)) return;
+    const moves = timeline.filter((it) => it.kind === 'move' && it.t0 >= d && it.t0 < d + DAY && !it.uncertain && !it.refined);
+    if (!moves.length) return;
+    const F = labDayFixes(d); if (F.length < 5) return;
+    const P = Object.assign({}, TL.cleanApi.DEFAULTS, readLS('tl-clean', {})), ctx = { params: P, noParts: true, trusted: readLS('tl-trust', []), placeWifi: readLS('tl-wifi', []) };
+    const key = d + '|' + F.length + '|' + F[F.length - 1].t + '|' + hashStr(JSON.stringify(P));
+    refining.add(d);
+    try {
+      let paths = await TL.osm.getDay(key).catch(() => null);
+      if (!paths) {
+        if (!osmOn()) return;
+        const r0 = TL.cleanApi.clean(F, ctx), moving = [];
+        for (let i = 0; i < F.length; i++) if (!r0.still[i] && r0.route[i] && r0.c[i] >= P.keep) moving.push(r0.route[i]);
+        const idx = await TL.osm.indexFor(moving);
+        if (!idx) return;
+        const res = TL.cleanApi.clean(F, Object.assign({ buildings: idx }, ctx)), route = TL.osm.refinePath(res.route.slice(), idx, res.still, P);
+        paths = moves.map((m) => {
+          const pts = [], ts = [];
+          for (let i = 0; i < F.length; i++) if (F[i].t > m.t0 && F[i].t < m.t1 && route[i] && res.c[i] >= P.keep) { pts.push(route[i]); ts.push(F[i].t); }
+          return pts.length >= 2 ? { t0: m.t0, path: pts, times: ts } : null;
+        });
+        TL.osm.putDay(key, paths).catch(() => {});
+      }
+      let changed = false;
+      for (const p of paths) {
+        const m = p && moves.find((x) => x.t0 === p.t0);
+        if (!m || m.refined) continue;
+        m.path = [m.path[0]].concat(p.path, [m.path[m.path.length - 1]]); m.times = [m.times[0]].concat(p.times, [m.times[m.times.length - 1]]);
+        m.refined = true; changed = true;
+      }
+      if (changed && curDay === d && !playing && !lab && !live) refreshDay();
+    } catch (e) { /* no buildings this time: the path stays as analysed */ }
+    finally { refining.delete(d); }
+  }
+  function osmCard() {
+    if (!TL.osm) return '';
+    const sw = `<button class="switch" id="swOsm" role="switch" aria-checked="${osmOn()}" aria-label="Use building outlines" type="button"><span></span></button>`;
+    return `<div class="card"><h2>Buildings &amp; streets</h2><div class="setting"><div class="t"><b>Use building outlines</b><span>The likely path avoids walking through buildings and follows streets. Outlines come from OpenStreetMap for the squares you passed through on the day you view; the server only learns which square.</span></div>${sw}</div><p class="note" id="osmInfo"></p><div class="actions"><button class="btn" id="osmClear" type="button">${svg('trash')}Clear downloaded outlines</button></div></div>`;
+  }
+  function osmInfo() {
+    const el = $('osmInfo'); if (!el || !TL.osm) return;
+    TL.osm.usage().then((u) => { el.textContent = 'On this phone: ' + u.tiles + ' square' + (u.tiles === 1 ? '' : 's') + ', ' + mb(u.bytes) + '. Squares unused for ' + TL.osm.KEEP_DAYS + ' days are deleted, and the oldest go first above ' + mb(TL.osm.MAX_BYTES) + '.'; }).catch(() => { el.textContent = ''; });
+  }
+
   // Rotating the phone / resizing: the map needs to know, and in live mode it stays centred on you.
   let resizeT = 0;
   window.addEventListener('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(() => { if (!map) return; map.invalidateSize(); if (live && follow) flyMe(); else if (!live && scenes.items.length) seek(frac); }, 150); });
   // The Back button (Android app): close what is open first, then leave the replay for the live map, and only then leave the app.
   window.__tlBack = () => {
+    if (lab) { closeLab(); return true; }
     if (!$('ask').hidden) { const b = $('askLater'); if (b) b.click(); else closeAsk(); return true; }
     if (document.body.classList.contains('on-stats')) { showTab('map'); return true; }
     if (!live && data) { goLive(); return true; }
     return false;
   };
+  window.__tlPt = (lat, lng) => { const q = map.latLngToContainerPoint([lat, lng]), r = $('map').getBoundingClientRect(); return { x: r.left + q.x, y: r.top + q.y }; };   // test hook
+  window.__tlLab = () => (lab && lab.res ? { n: lab.F.length, sel: lab.sel, c: Array.from(lab.res.c), why: lab.res.why, fixes: lab.F.map((f) => [f.lat, f.lng]) } : null);   // test hook (read-only)
   window.__tl = () => { const el = marker && marker.getElement(), cur = scenes.items.length ? locate(frac * scenes.V).s : null; return { zoom: map.getZoom(), heading, frac, V: scenes.V, items: scenes.items.map((s) => (s.kind === 'move' ? s.mode : 'stay')), cur: cur ? (cur.kind === 'move' ? cur.mode : 'stay') : null, car: !!(el && el.classList.contains('drive')), timeline: timeline.length, day: curDay, playing, dragging: !!(map && map.dragging.enabled()), live, follow, zoomBias, speed, centre: map ? [map.getCenter().lat, map.getCenter().lng] : null, me }; };   // test hook (read-only)
 
   async function dataInfo() {
@@ -843,8 +1034,8 @@
     if (!st.recording) return { key: 'off', label: 'Off', text: 'Recording is off. Start it to build your timeline automatically.' };
     if (!st.fine) return { key: 'perm', label: 'Needs location permission', text: 'Allow location access so trips can be recorded.' };
     if (!st.bg) return { key: 'perm', label: 'Needs “Allow all the time”', text: 'Open App permissions, then Location, then choose “Allow all the time”. Without it Android stops recording when the app is closed.' };
-    if (!st.activity) return { key: 'perm', label: 'Needs physical activity', text: 'Allow “Physical activity” so recording only wakes up when you start moving. That is what keeps the battery use near zero.' };
-    return { key: 'on', label: 'Recording', text: 'Nothing runs while you are still. GPS is used only while you move.' };
+    if (!st.activity) return { key: 'perm', label: 'Needs physical activity', text: 'Allow “Physical activity” so the step counter can tell when you start moving. That is what keeps the battery use near zero.' };
+    return { key: 'on', label: 'Recording', text: 'GPS is used only while you move; the phone’s own motion sensors notice when you start. No Google service is used, and the small “Timeline is ready” notification is what Android requires to keep the recorder alive.' };
   }
   const ago = (t) => { const m = Math.round((Date.now() - t) / 60000); return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : m < 1440 ? Math.round(m / 60) + ' h ago' : Math.round(m / 1440) + ' days ago'; };
   function renderRecording() {
@@ -921,6 +1112,15 @@
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshNative(); });
 
   // ---- Insights ----
+  // Stretches the cleaning ignored because the GPS put you where you never are (spoofing near the northern border,
+  // or a "trip" abroad too short / too sudden to be real). A trip abroad can be confirmed; the Middle East cannot.
+  function ignoredCard() {
+    const rm = (timeline && timeline.removed) || [];
+    if (!rm.length) return '';
+    const fmt = (t) => new Date(t).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }) + ' ' + clock(t);
+    const rows = rm.slice(-8).reverse().map((r) => `<li class="ign"><div class="grow"><b>${fmt(r.t0)} · ${fmtDur(Math.max(60000, r.t1 - r.t0))}</b><span>${r.why === 'never' ? 'GPS placed you in a country you are never in (usually GPS interference). Ignored.' : 'Abroad, but too short or too sudden to be a real trip. Ignored.'}</span></div>${r.why === 'abroad' ? `<button class="btn sm" type="button" data-trust="${r.t0},${r.t1}">I was there</button>` : ''}</li>`).join('');
+    return `<div class="card"><h2>Ignored locations</h2><p class="note" style="margin-top:0">${rm.length} stretch${rm.length > 1 ? 'es' : ''} where the GPS put you somewhere you could not have been.</p><ul class="rows">${rows}</ul></div>`;
+  }
   // Time on the phone while standing still (Android app only: it needs "Usage access", the same data Digital Wellbeing uses).
   function phoneCard(year) {
     if (!NATIVE) return '';
@@ -959,11 +1159,12 @@
       `<div class="tiles"><div class="tile"><b>${s.activeDays.toLocaleString()}</b><span>active days</span></div><div class="tile"><b>${s.uniquePlaces.toLocaleString()}</b><span>different places</span></div>` +
       (s.longest ? `<div class="tile"><b>${fmtKm(s.longest.dist / 1000).replace(' km', '')}<small style="font-size:13px;color:var(--text-2);font-weight:600"> km</small></b><span>longest ${MODE_NAME[s.longest.mode].toLowerCase()} leg</span></div>` : '') + `</div>` +
       `<div class="card"><h2>How you travelled</h2><ul class="rows">${modeRows || '<li class="empty">No trips yet.</li>'}</ul></div>` +
-      phoneCard(year) +
+      phoneCard(year) + ignoredCard() +
       `<div class="card"><h2>Your places</h2>${pend ? `<div class="cta"><div class="t"><b>${pend} place${pend > 1 ? 's need' : ' needs'} a name</b><span>A quick question about each.</span></div><button class="btn primary sm" id="askStart" type="button">Start</button></div>` : ''}<ul class="rows">${placeRows || '<li class="empty">No stops yet.</li>'}</ul></div>` +
       `<div class="card"><h2>Playback</h2>` +
       `<div class="setting"><div class="t"><b>Keep screen on</b><span id="awakeNote"></span></div>${sw('swAwake', 'Keep screen on', keepOn)}</div>` +
       `<div class="setting"><div class="t"><b>Continue to the next day</b><span>When a day ends, the replay moves on and keeps playing.</span></div>${sw('swNext', 'Continue to the next day', autoNext)}</div></div>` +
+      osmCard() +
       `<div class="card"><h2>Your data</h2><p class="note" id="dinfo" style="margin-top:0"></p><div class="actions"><button class="btn" id="chg" type="button"><span data-icon="refresh"></span>Change file</button><button class="btn danger" id="forget" type="button"><span data-icon="trash"></span><span class="lbl">Forget my data</span></button></div><p class="note">Your file and place names are kept only in this browser, on this phone. Nothing is uploaded.</p></div>` +
       `</div>`;
     hydrate(el);
@@ -979,6 +1180,13 @@
       if (!b.classList.contains('armed')) { b.classList.add('armed'); lbl.textContent = 'Tap again to confirm'; clearTimeout(armedT); armedT = setTimeout(() => { b.classList.remove('armed'); lbl.textContent = 'Forget my data'; }, 3500); return; }
       await clearFiles(); try { localStorage.removeItem('tl-places'); localStorage.removeItem('tl-ask-snooze'); } catch (e) {} location.reload();
     };
+    el.querySelectorAll('[data-trust]').forEach((b) => (b.onclick = () => {
+      const [a, c] = b.dataset.trust.split(',').map(Number), tr = readLS('tl-trust', []);
+      tr.push([a - 60000, c + 60000]); writeLS('tl-trust', tr); buzz(); reanalyze('Kept as a real trip');
+    }));
+    const so = $('swOsm'); if (so) so.onclick = () => { const on = !osmOn(); writeLS('tl-osm', on); so.setAttribute('aria-checked', String(on)); buzz(); if (on && curDay != null) refineDay(curDay); };
+    const oc = $('osmClear'); if (oc) oc.onclick = () => TL.osm.clearAll().then(() => { toast('Downloaded outlines deleted', 2000); osmInfo(); });
+    osmInfo();
     const ua = $('usageAllow'); if (ua) ua.onclick = () => { buzz(); NATIVE.openSettings('usage'); };
     renderRecording(); renderUpdates(); wakeInfo(); dataInfo();
   }

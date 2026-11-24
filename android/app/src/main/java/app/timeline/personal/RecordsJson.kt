@@ -53,6 +53,13 @@ object RecordsJson {
                 .append("\",\"accuracyMeters\":").append(String.format(Locale.US, "%.1f", f.acc))
                 .append(",\"timestamp\":\"").append(Instant.ofEpochMilli(f.t).toString()).append('"')
             if (f.spd >= 0f) out.append(",\"speedMetersPerSecond\":").append(String.format(Locale.US, "%.2f", f.spd))
+            f.alt?.let { out.append(",\"altitudeMeters\":").append(String.format(Locale.US, "%.1f", it)) }
+            f.vacc?.let { out.append(",\"verticalAccuracyMeters\":").append(String.format(Locale.US, "%.1f", it)) }
+            f.prov?.let { out.append(",\"source\":\"").append(Policy.sourceName(it, f.acc)).append('"') }
+            f.sat?.let { out.append(",\"sat\":").append(it.toString()) }
+            f.cn0?.let { out.append(",\"cn0\":").append(String.format(Locale.US, "%.1f", it)) }
+            f.wifiN?.let { out.append(",\"wifiN\":").append(it.toString()) }
+            f.wifiH?.let { h -> if (h.all { it.isLetterOrDigit() }) out.append(",\"wifiH\":\"").append(h).append('"') }
             out.append("}}")
         }
         for ((t, type) in activityRecords(acts, nowMs)) {

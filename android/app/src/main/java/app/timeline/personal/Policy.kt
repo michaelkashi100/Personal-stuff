@@ -12,9 +12,9 @@ data class Params(val intervalMs: Long, val minDistanceM: Float, val maxDelayMs:
 /**
  * Everything that decides how much battery recording uses. No Android types here, so it is unit-tested on the JVM.
  *
- * The idea (the same one Google uses): while you are still nothing runs at all. Android's activity recognition
- * (a low-power sensor service) wakes the app when you start moving; GPS is then used in batches, and it is switched
- * off a few minutes after you stop.
+ * The idea: while you are still nothing runs but two low-power motion chips (the "significant motion" sensor and the
+ * step counter), which wake the app when you start moving; GPS is then used in batches, and it is switched off a few
+ * minutes after you stop. No Google service is involved.
  */
 object Policy {
     /** Keep recording this long after "still" is reported, to capture the arrival. */
@@ -59,6 +59,32 @@ object Policy {
     fun moved(distanceM: Double) = distanceM >= MOVE_THRESHOLD_M
 
     fun idleTooLong(nowMs: Long, lastMoveAtMs: Long) = nowMs - lastMoveAtMs > MAX_IDLE_MS
+
+    /** Steps in the last two minutes that mean "you started walking" (a few steps around the room do not). */
+    const val START_STEPS = 30
+    /** Signal details (altitude, satellites, Wi-Fi) are only needed for the cleaning of recent days: deleted after this. */
+    const val SIGNAL_KEEP_MS = 3 * 86_400_000L
+
+    fun shouldStartGps(stepsLast2Min: Int, significantMotion: Boolean, passiveMovedM: Double) =
+        significantMotion || stepsLast2Min >= START_STEPS || passiveMovedM >= 300.0
+
+    /** Stop GPS: no steps and no real movement for a while (a red light or a short queue does not stop it). */
+    fun shouldStopGps(nowMs: Long, lastStepAtMs: Long, lastMoveAtMs: Long) =
+        nowMs - lastStepAtMs > STOP_AFTER_STILL_MS && nowMs - lastMoveAtMs > STOP_AFTER_STILL_MS
+
+    fun modeForActivity(type: Int?): Mode = when (type) {
+        IN_VEHICLE -> Mode.DRIVE
+        ON_BICYCLE -> Mode.BIKE
+        else -> Mode.WALK
+    }
+
+    /** "network" fixes are Wi-Fi or cell positions: label them by accuracy, as Google's export does. */
+    fun sourceName(provider: String?, accuracyM: Float): String = when (provider) {
+        "gps" -> "GPS"
+        "fused" -> "FUSED"
+        "network" -> if (accuracyM <= 100f) "WIFI" else "CELL"
+        else -> "UNKNOWN"
+    }
 
     fun distanceM(lat1: Double, lng1: Double, lat2: Double, lng2: Double): Double {
         val r = Math.PI / 180.0
