@@ -25,6 +25,7 @@ jobs:
           tar --exclude=./.git --exclude=./.github --exclude=./test --exclude=./android --exclude=./README.md --exclude=./_site -cf - . | (cd _site && tar -xf -)
           echo "Published files:"; find _site -type f | sort
           test -f _site/analyze.js && test -f _site/icons/icon-192.png
+          test -s _site/sw.js && grep -q "const CACHE" _site/sw.js   # the offline / auto-update file must never ship empty
           python3 .github/scripts/make_bundle.py _site "$(date +%s)"   # lets the Android app update itself from this site
           test -f _site/bundle.json
       - uses: actions/upload-pages-artifact@v3
