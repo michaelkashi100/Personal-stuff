@@ -61,8 +61,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release delete android-latest --cleanup-tag --yes || true
-          gh release create android-latest timeline.apk \
-            --title "Timeline for Android (build ${{ github.run_number }})" \
-            --notes "Install: open this page on your phone, download timeline.apk, open it and allow installing from this source. Then open Timeline and tap Start recording." \
-            --target "${{ github.sha }}"
+          # Replace the file in the existing release (the download link never disappears); create it only if missing.
+          TITLE="Timeline for Android (build ${{ github.run_number }})"
+          NOTES="Install: open this page on your phone, download timeline.apk, open it and allow installing from this source. Then open Timeline and tap Start recording."
+          if gh release view android-latest >/dev/null 2>&1; then
+            gh release upload android-latest timeline.apk --clobber
+            gh release edit android-latest --title "$TITLE" --notes "$NOTES"
+          else
+            gh release create android-latest timeline.apk --title "$TITLE" --notes "$NOTES" --target "${{ github.sha }}"
+          fi
