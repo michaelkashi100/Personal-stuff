@@ -1,7 +1,8 @@
 // Normalises Google Timeline exports into { visits, trips, points, hints }.
 //   visits : { start, end, lat, lng, type, name }
 //   trips  : { start, end, type, dist, path:[[lat,lng]..] }   (Google's own activity segments / GPS paths)
-//   points : { t, lat, lng, acc?, v? }                         (timed position fixes, with accuracy / speed when present)
+//   points : { t, lat, lng, acc?, v?, alt?, vacc?, src?, sat?, cn0?, wifiN?, wifiH? }   (timed fixes; extras when present:
+//            altitude, its accuracy, source GPS/WIFI/CELL, satellites used, signal strength, Wi-Fi networks seen, hashed connected Wi-Fi)
 //   hints  : { t, type, conf }                                 (Google's on-device activity guesses, conf 0..1)
 // Supported: on-device Timeline.json (semanticSegments + rawSignals, or the iOS array),
 // Takeout Semantic Location History (timelineObjects), and Records.json (locations).
@@ -16,6 +17,17 @@
   const ms = (t) => (t ? Date.parse(t) : NaN);
   const num = (x) => (x == null || x === '' || isNaN(+x) ? undefined : +x);
   const conf01 = (c) => { c = +c; return !(c >= 0) ? 0.5 : c > 1 ? Math.min(1, c / 100) : c; };
+
+  const SRC = { GPS: 'gps', WIFI: 'wifi', CELL: 'cell', FUSED: 'fused', UNKNOWN: 'unknown' };
+  function extras(p, o, altKey) {                             // optional signal details a fix may carry
+    const alt = num(o[altKey]), vacc = num(o.verticalAccuracyMeters ?? o.verticalAccuracy), src = o.source ? SRC[String(o.source).toUpperCase()] || 'unknown' : undefined;
+    if (alt !== undefined) p.alt = alt;
+    if (vacc !== undefined) p.vacc = vacc;
+    if (src) p.src = src;
+    for (const k of ['sat', 'cn0', 'wifiN']) { const v = num(o[k]); if (v !== undefined) p[k] = v; }
+    if (typeof o.wifiH === 'string' && o.wifiH) p.wifiH = o.wifiH;
+    return p;
+  }
 
   function fromSegments(segs, out) {
     for (const s of segs) {
@@ -48,9 +60,11 @@
       const pos = r.position;
       if (pos) {
         const ll = parseLatLng(pos.LatLng || pos.latLng), t = ms(pos.timestamp);
-        if (ll && t === t) out.points.push({ t, lat: ll[0], lng: ll[1], acc: num(pos.accuracyMeters), v: num(pos.speedMetersPerSecond) });
+        if (ll && t === t) out.points.push(extras({ t, lat: ll[0], lng: ll[1], acc: num(pos.accuracyMeters), v: num(pos.speedMetersPerSecond) }, pos, 'altitudeMeters'));
         continue;
       }
+      const ws = r.wifiScan;                                   // how many Wi-Fi networks were around (urban / indoor context)
+      if (ws && Array.isArray(ws.devicesRecords)) { const t = ms(ws.deliveryTime || ws.timestamp); if (t === t) out.wifi.push({ t, n: ws.devicesRecords.length }); continue; }
       const ar = r.activityRecord, pa = ar && ar.probableActivities;
       if (pa && pa.length) {
         const top = pa.reduce((a, b) => (conf01(b.confidence) > conf01(a.confidence) ? b : a));
@@ -81,7 +95,7 @@
     for (const l of locs) {
       const ll = e7(l.latitudeE7, l.longitudeE7), t = ms(l.timestamp);
       if (!ll || t !== t) continue;
-      out.points.push({ t, lat: ll[0], lng: ll[1], acc: num(l.accuracy), v: num(l.velocity) });
+      out.points.push(extras({ t, lat: ll[0], lng: ll[1], acc: num(l.accuracy), v: num(l.velocity) }, l, 'altitude'));
       for (const a of l.activity || []) {                     // Google's per-fix activity guesses
         const list = a.activity || [];
         if (!list.length) continue;
@@ -93,7 +107,7 @@
   }
 
   function parseTimeline(json) {
-    const out = { visits: [], trips: [], points: [], hints: [] };
+    const out = { visits: [], trips: [], points: [], hints: [], wifi: [] };
     if (Array.isArray(json)) fromSegments(json, out);                       // iOS export
     else if (json.semanticSegments) {                                       // Android export
       fromSegments(json.semanticSegments, out);
@@ -106,6 +120,16 @@
     out.trips = out.trips.filter((t) => !isNaN(t.start));
     out.visits.sort((a, b) => a.start - b.start);
     out.trips.sort((a, b) => a.start - b.start);
+    if (out.wifi.length) {                                     // attach Wi-Fi counts to the nearest fix (within a minute)
+      out.wifi.sort((a, b) => a.t - b.t);
+      const pts = out.points.slice().sort((a, b) => a.t - b.t);
+      let j = 0;
+      for (const p of pts) {
+        while (j + 1 < out.wifi.length && Math.abs(out.wifi[j + 1].t - p.t) <= Math.abs(out.wifi[j].t - p.t)) j++;
+        if (p.wifiN === undefined && Math.abs(out.wifi[j].t - p.t) <= 60000) p.wifiN = out.wifi[j].n;
+      }
+    }
+    delete out.wifi;
     return out;
   }
 

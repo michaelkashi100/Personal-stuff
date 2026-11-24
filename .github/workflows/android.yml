@@ -3,7 +3,7 @@ name: Build Android app
 on:
   push:
     branches: [main, 'ccr-*']
-    paths: ['android/**', '.github/scripts/**', 'index.html', 'app.js', 'parser.js', 'analyze.js', 'manifest.json', 'lib/**', 'icons/**', '.github/workflows/android.yml']
+    paths: ['android/**', '.github/scripts/**', 'index.html', 'app.js', 'parser.js', 'clean.js', 'analyze.js', 'manifest.json', 'lib/**', 'icons/**', '.github/workflows/android.yml']
   workflow_dispatch:
 
 permissions:
@@ -35,7 +35,7 @@ jobs:
           rm -f android/app/src/main/assets/www/sw.js   # the app updates through new APKs, not a service worker
           python3 .github/scripts/make_bundle.py android/app/src/main/assets/www "$(date +%s)"   # the app compares this with the one on the site
           echo "Bundled files:"; find android/app/src/main/assets/www -type f | sort
-          test -f android/app/src/main/assets/www/analyze.js && test -f android/app/src/main/assets/www/bundle.json
+          test -f android/app/src/main/assets/www/analyze.js && test -f android/app/src/main/assets/www/clean.js && test -f android/app/src/main/assets/www/bundle.json
 
       - name: Kotlin unit tests (also compiles the app)
         working-directory: android
