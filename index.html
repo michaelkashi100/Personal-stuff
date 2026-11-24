@@ -5,9 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#080d18">
 <meta name="color-scheme" content="dark">
-<!-- Privacy guard: the browser blocks every network request except this site's own files and OpenStreetMap map-tile images.
-     connect-src 'none' means scripts cannot fetch/XHR/WebSocket/beacon anything, so file contents cannot be sent out. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tile.openstreetmap.org; connect-src 'none'; worker-src 'self'; manifest-src 'self'; form-action 'none'; base-uri 'none'">
+<!-- Privacy guard: the browser blocks every network request except this site's own files, OpenStreetMap map-tile images and
+     OpenStreetMap building/street outlines (overpass-api.de, asked by map square only). Scripts can reach no other address,
+     so your file contents cannot be sent out. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tile.openstreetmap.org; connect-src https://overpass-api.de; worker-src 'self'; manifest-src 'self'; form-action 'none'; base-uri 'none'">
 <title>My Timeline</title>
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="icons/icon-192.png">
@@ -345,6 +346,7 @@
 <script src="lib/leaflet.js"></script>
 <script src="parser.js"></script>
 <script src="clean.js"></script>
+<script src="osm.js"></script>
 <script src="analyze.js"></script>
 <script src="app.js"></script>
 </body>

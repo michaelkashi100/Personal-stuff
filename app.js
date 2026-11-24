@@ -225,6 +225,7 @@
     $('mapView').style.display = b.dataset.v === 'map' ? 'block' : 'none';
     $('statsView').style.display = b.dataset.v === 'stats' ? 'block' : 'none';
     syncLoc();
+    if (b.dataset.v === 'stats') osmInfo();
     if (b.dataset.v === 'map') { map.invalidateSize(); if (scenes.items.length) seek(frac); if (live) { setFollow(true); flyMe(); } }   // re-frame the camera: it was sized while hidden
   }));
 
@@ -330,7 +331,7 @@
       }, (err) => {
         if (err && err.code === 1) {                             // denied: stop and say so
           if (meWatch != null) { navigator.geolocation.clearWatch(meWatch); meWatch = null; }
-          if (!meDenied) { meDenied = true; toast('Allow location to see where you are on the map.', 5000); if (live) renderLive(); }
+          if (!meDenied) { meDenied = true; if (meAsked) toast('Allow location to see where you are on the map.', 5000); if (live) renderLive(); }   // the HUD already says it; a toast only when you asked
         } else if (meWatch != null) {                            // a temporary gap (no signal, timeout): start a fresh watch shortly
           navigator.geolocation.clearWatch(meWatch); meWatch = null;
           setTimeout(syncLoc, 1000);
@@ -339,7 +340,8 @@
     } catch (e) { meWatch = null; }
   }
   document.addEventListener('visibilitychange', () => { syncLoc(); if (document.visibilityState === 'visible' && live) { setFollow(true); flyMe(); } });
-  $('locate').onclick = () => { buzz(); goLive(); };
+  let meAsked = false;
+  $('locate').onclick = () => { buzz(); meAsked = true; if (meDenied) toast('Allow location to see where you are on the map.', 5000); goLive(); };
 
   const dayKey = (t) => { const d = new Date(t); return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime(); };
   let dayList = [], dayTrips = new Map(), curDay = null, speed = 1, autoNext = true, keepOn = true, wake = null;
@@ -542,6 +544,7 @@
     carEl = marker.getElement().querySelector('.carwrap'); badgeEl = marker.getElement().querySelector('.badge');
     renderBar(items, byMode, still);
     $('scrub').value = 0; seek(0);
+    setTimeout(() => { if (curDay === d && !playing) refineDay(d); }, 400);
   }
 
   // Timeline bar: coloured blocks = movement by mode, hatched blocks = time spent still (with its duration).
@@ -726,6 +729,11 @@
     map.removeLayer(dayLayer); lab.layer.addTo(map);
     $('lab').hidden = false; document.body.classList.add('lab-open'); map.invalidateSize();
     renderLabPanel(); runLab(true);
+    if (TL.osm && osmOn() && lab.res) {                         // buildings for this day, then decide again with them
+      const L0 = lab, pts = []; for (let i = 0; i < lab.F.length; i++) if (!lab.res.still[i] && lab.res.route[i] && lab.res.c[i] >= lab.res.P.keep) pts.push(lab.res.route[i]);
+      const st = $('labStats'); if (st && pts.length) st.textContent += ' · loading buildings…';
+      TL.osm.indexFor(pts, { onError: () => {} }).then((idx) => { if (lab !== L0) return; lab.idx = idx; runLab(false); if (!idx && pts.length) { const e = $('labStats'); if (e) e.textContent += ' · no building data (offline?)'; } }).catch(() => {});
+    }
   }
   function closeLab() {
     if (!lab) return;
@@ -738,7 +746,8 @@
     if (!lab) return;
     const F = labDayFixes(curDay), t0 = performance.now();
     const today = dayKey(Date.now()) === curDay;
-    const res = F.length ? TL.cleanApi.clean(F, { params: lab.P, trusted: readLS('tl-trust', []), placeWifi: readLS('tl-wifi', []), live: today && !!NATIVE }) : null;
+    const res = F.length ? TL.cleanApi.clean(F, { params: lab.P, trusted: readLS('tl-trust', []), placeWifi: readLS('tl-wifi', []), live: today && !!NATIVE, buildings: lab.idx || undefined }) : null;
+    if (res && lab.idx) TL.osm.refinePath(res.route, lab.idx, res.still, res.P);
     lab.F = F; lab.res = res; lab.ms = performance.now() - t0;
     drawLab(fit); labStats();
   }
@@ -770,7 +779,7 @@
     const el = $('labStats'); if (!el || !lab.res) { if (el) el.textContent = 'No GPS fixes on this day.'; return; }
     const r = lab.res; let doubt = 0, ign = 0, low = 0;
     for (let i = 0; i < lab.F.length; i++) { if (r.why[i] === 'never' || r.why[i] === 'abroad') ign++; else if (r.c[i] < 0.5) doubt++; if (r.c[i] < r.P.keep) low++; }
-    el.textContent = lab.F.length + ' fixes · ' + doubt + ' doubted' + (ign ? ' · ' + ign + ' ignored (impossible place)' : '') + ' · ' + low + ' left out · ' + Math.round(lab.ms) + ' ms';
+    el.textContent = lab.F.length + ' fixes · ' + doubt + ' doubted' + (ign ? ' · ' + ign + ' ignored (impossible place)' : '') + ' · ' + low + ' left out' + (lab.idx ? ' · ' + lab.idx.buildings + ' buildings' : '') + ' · ' + Math.round(lab.ms) + ' ms';
   }
   function labDetail(i) {
     const el = $('labDetail'), r = lab.res, f = lab.F[i], parts = r.parts[i];
@@ -808,6 +817,56 @@
   }
   $('labBtn').onclick = () => (lab ? closeLab() : openLab());
   swipeOn($('lab'), { down: () => { const c = $('lab').querySelector('.card'); if (c.scrollTop < 4) closeLab(); } }, (e) => !e.target.closest('input,details'));
+
+
+  // ---- Buildings & streets (OpenStreetMap) for the likely path of the day you look at ----
+  const osmOn = () => readLS('tl-osm', true) !== false;
+  const hashStr = (s) => { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); };
+  const refining = new Set();
+  async function refineDay(d) {
+    if (!TL.osm || !data || refining.has(d)) return;
+    const moves = timeline.filter((it) => it.kind === 'move' && it.t0 >= d && it.t0 < d + DAY && !it.uncertain && !it.refined);
+    if (!moves.length) return;
+    const F = labDayFixes(d); if (F.length < 5) return;
+    const P = Object.assign({}, TL.cleanApi.DEFAULTS, readLS('tl-clean', {})), ctx = { params: P, noParts: true, trusted: readLS('tl-trust', []), placeWifi: readLS('tl-wifi', []) };
+    const key = d + '|' + F.length + '|' + F[F.length - 1].t + '|' + hashStr(JSON.stringify(P));
+    refining.add(d);
+    try {
+      let paths = await TL.osm.getDay(key).catch(() => null);
+      if (!paths) {
+        if (!osmOn()) return;
+        const r0 = TL.cleanApi.clean(F, ctx), moving = [];
+        for (let i = 0; i < F.length; i++) if (!r0.still[i] && r0.route[i] && r0.c[i] >= P.keep) moving.push(r0.route[i]);
+        const idx = await TL.osm.indexFor(moving);
+        if (!idx) return;
+        const res = TL.cleanApi.clean(F, Object.assign({ buildings: idx }, ctx)), route = TL.osm.refinePath(res.route.slice(), idx, res.still, P);
+        paths = moves.map((m) => {
+          const pts = [], ts = [];
+          for (let i = 0; i < F.length; i++) if (F[i].t > m.t0 && F[i].t < m.t1 && route[i] && res.c[i] >= P.keep) { pts.push(route[i]); ts.push(F[i].t); }
+          return pts.length >= 2 ? { t0: m.t0, path: pts, times: ts } : null;
+        });
+        TL.osm.putDay(key, paths).catch(() => {});
+      }
+      let changed = false;
+      for (const p of paths) {
+        const m = p && moves.find((x) => x.t0 === p.t0);
+        if (!m || m.refined) continue;
+        m.path = [m.path[0]].concat(p.path, [m.path[m.path.length - 1]]); m.times = [m.times[0]].concat(p.times, [m.times[m.times.length - 1]]);
+        m.refined = true; changed = true;
+      }
+      if (changed && curDay === d && !playing && !lab && !live) refreshDay();
+    } catch (e) { /* no buildings this time: the path stays as analysed */ }
+    finally { refining.delete(d); }
+  }
+  function osmCard() {
+    if (!TL.osm) return '';
+    const sw = `<button class="switch" id="swOsm" role="switch" aria-checked="${osmOn()}" aria-label="Use building outlines" type="button"><span></span></button>`;
+    return `<div class="card"><h2>Buildings &amp; streets</h2><div class="setting"><div class="t"><b>Use building outlines</b><span>The likely path avoids walking through buildings and follows streets. Outlines come from OpenStreetMap for the squares you passed through on the day you view; the server only learns which square.</span></div>${sw}</div><p class="note" id="osmInfo"></p><div class="actions"><button class="btn" id="osmClear" type="button">${svg('trash')}Clear downloaded outlines</button></div></div>`;
+  }
+  function osmInfo() {
+    const el = $('osmInfo'); if (!el || !TL.osm) return;
+    TL.osm.usage().then((u) => { el.textContent = 'On this phone: ' + u.tiles + ' square' + (u.tiles === 1 ? '' : 's') + ', ' + mb(u.bytes) + '. Squares unused for ' + TL.osm.KEEP_DAYS + ' days are deleted, and the oldest go first above ' + mb(TL.osm.MAX_BYTES) + '.'; }).catch(() => { el.textContent = ''; });
+  }
 
   // Rotating the phone / resizing: the map needs to know, and in live mode it stays centred on you.
   let resizeT = 0;
@@ -1105,6 +1164,7 @@
       `<div class="card"><h2>Playback</h2>` +
       `<div class="setting"><div class="t"><b>Keep screen on</b><span id="awakeNote"></span></div>${sw('swAwake', 'Keep screen on', keepOn)}</div>` +
       `<div class="setting"><div class="t"><b>Continue to the next day</b><span>When a day ends, the replay moves on and keeps playing.</span></div>${sw('swNext', 'Continue to the next day', autoNext)}</div></div>` +
+      osmCard() +
       `<div class="card"><h2>Your data</h2><p class="note" id="dinfo" style="margin-top:0"></p><div class="actions"><button class="btn" id="chg" type="button"><span data-icon="refresh"></span>Change file</button><button class="btn danger" id="forget" type="button"><span data-icon="trash"></span><span class="lbl">Forget my data</span></button></div><p class="note">Your file and place names are kept only in this browser, on this phone. Nothing is uploaded.</p></div>` +
       `</div>`;
     hydrate(el);
@@ -1124,6 +1184,9 @@
       const [a, c] = b.dataset.trust.split(',').map(Number), tr = readLS('tl-trust', []);
       tr.push([a - 60000, c + 60000]); writeLS('tl-trust', tr); buzz(); reanalyze('Kept as a real trip');
     }));
+    const so = $('swOsm'); if (so) so.onclick = () => { const on = !osmOn(); writeLS('tl-osm', on); so.setAttribute('aria-checked', String(on)); buzz(); if (on && curDay != null) refineDay(curDay); };
+    const oc = $('osmClear'); if (oc) oc.onclick = () => TL.osm.clearAll().then(() => { toast('Downloaded outlines deleted', 2000); osmInfo(); });
+    osmInfo();
     const ua = $('usageAllow'); if (ua) ua.onclick = () => { buzz(); NATIVE.openSettings('usage'); };
     renderRecording(); renderUpdates(); wakeInfo(); dataInfo();
   }
