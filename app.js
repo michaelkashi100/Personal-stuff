@@ -1034,8 +1034,8 @@
     if (!st.recording) return { key: 'off', label: 'Off', text: 'Recording is off. Start it to build your timeline automatically.' };
     if (!st.fine) return { key: 'perm', label: 'Needs location permission', text: 'Allow location access so trips can be recorded.' };
     if (!st.bg) return { key: 'perm', label: 'Needs “Allow all the time”', text: 'Open App permissions, then Location, then choose “Allow all the time”. Without it Android stops recording when the app is closed.' };
-    if (!st.activity) return { key: 'perm', label: 'Needs physical activity', text: 'Allow “Physical activity” so recording only wakes up when you start moving. That is what keeps the battery use near zero.' };
-    return { key: 'on', label: 'Recording', text: 'Nothing runs while you are still. GPS is used only while you move.' };
+    if (!st.activity) return { key: 'perm', label: 'Needs physical activity', text: 'Allow “Physical activity” so the step counter can tell when you start moving. That is what keeps the battery use near zero.' };
+    return { key: 'on', label: 'Recording', text: 'GPS is used only while you move; the phone’s own motion sensors notice when you start. No Google service is used, and the small “Timeline is ready” notification is what Android requires to keep the recorder alive.' };
   }
   const ago = (t) => { const m = Math.round((Date.now() - t) / 60000); return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : m < 1440 ? Math.round(m / 60) + ' h ago' : Math.round(m / 1440) + ' days ago'; };
   function renderRecording() {
