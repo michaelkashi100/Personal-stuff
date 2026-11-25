@@ -159,6 +159,147 @@
     return tiles.length ? buildIndex(tiles) : null;
   }
 
-  const api = { indexFor, buildIndex, refinePath, compact, tileOf, tileBox, evict, usage, clearAll, getDay, putDay, ENDPOINT, KEEP_DAYS, MAX_BYTES };
+  // ---------- Driving: map matching onto roads ----------
+  // Only roads a car can use, in bigger squares (~2.4 km: a drive crosses many small ones). A hidden-Markov match
+  // (the standard method, Newson & Krumm 2009): each position has a few candidate points on nearby roads; the chosen
+  // chain trades "close to the GPS" against "a sensible step from the previous one" and "staying on the same road
+  // (or one that connects to it)", so a parallel road a few metres away does not steal the car.
+  const RZ = 14, MAX_ROAD_TILES = 60;
+  const DRIVABLE = 'motorway|trunk|primary|secondary|tertiary|unclassified|residential|service|living_street|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link|road';
+  const rtileOf = (lat, lng) => { const n = 2 ** RZ, s = Math.sin(lat * RAD); return [Math.floor(((lng + 180) / 360) * n), Math.floor((0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * n)]; };
+  const rtileBox = (x, y) => { const n = 2 ** RZ, lng = (v) => (v / n) * 360 - 180, lat = (v) => Math.atan(Math.sinh(Math.PI * (1 - (2 * v) / n))) / RAD; return { s: lat(y + 1), n: lat(y), w: lng(x), e: lng(x + 1) }; };
+  function compactRoads(json) {
+    const w = [];
+    for (const el of json.elements || []) {
+      if (el.type !== 'way' || !el.geometry || el.geometry.length < 2) continue;
+      const flat = []; for (const g of el.geometry) flat.push(Math.round(g.lat * 1e5), Math.round(g.lon * 1e5));
+      w.push(flat);
+    }
+    return { w };
+  }
+  async function downloadRoads(x, y) {
+    const bx = rtileBox(x, y), bb = `(${bx.s.toFixed(6)},${bx.w.toFixed(6)},${bx.n.toFixed(6)},${bx.e.toFixed(6)})`;
+    const q = `[out:json][timeout:40];way["highway"~"^(${DRIVABLE})$"]${bb};out geom;`;
+    const r = await fetch(ENDPOINT + '?data=' + encodeURIComponent(q), { credentials: 'omit', referrerPolicy: 'no-referrer' });
+    if (!r.ok) throw new Error('road data HTTP ' + r.status);
+    return compactRoads(await r.json());
+  }
+  function buildRoadIndex(tiles) {
+    const W = [], grid = new Map(), G = 0.0005;
+    for (const t of tiles) for (const f of t.w) {
+      const id = W.push(f) - 1;
+      for (let i = 0; i + 3 < f.length; i += 2) {                // walk along each segment (long straight highway stretches too)
+        const la = f[i] / 1e5, lo = f[i + 1] / 1e5, lb = f[i + 2] / 1e5, lob = f[i + 3] / 1e5;
+        const steps = Math.max(1, Math.ceil(Math.max(Math.abs(lb - la), Math.abs(lob - lo)) / (G / 2)));
+        for (let k = 0; k <= steps; k++) {
+          const key = Math.floor((la + ((lb - la) * k) / steps) / G) * 1e6 + Math.floor((lo + ((lob - lo) * k) / steps) / G);
+          let l = grid.get(key); if (!l) grid.set(key, (l = [])); if (l[l.length - 1] !== id) l.push(id);
+        }
+      }
+    }
+    const kx = (lat) => 111320 * Math.cos(lat * RAD), ky = 110540;
+    function project(id, lat, lng) {                          // nearest point of way `id`: { d, lat, lng, seg, u }
+      const f = W[id], sx = kx(lat); let best = null;
+      for (let i = 0; i + 3 < f.length; i += 2) {
+        const ay = (f[i] / 1e5 - lat) * ky, ax = (f[i + 1] / 1e5 - lng) * sx, by = (f[i + 2] / 1e5 - lat) * ky, bx = (f[i + 3] / 1e5 - lng) * sx;
+        const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy, u = l2 ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / l2)) : 0;
+        const px = ax + u * dx, py = ay + u * dy, d = Math.sqrt(px * px + py * py);
+        if (!best || d < best.d) best = { d, lat: lat + py / ky, lng: lng + px / sx, seg: i >> 1, u, way: id };
+      }
+      return best;
+    }
+    const conn = new Map();
+    function connected(a, b) {                                // two roads meet (a shared or very close point)
+      if (a === b) return true;
+      const key = a < b ? a + ':' + b : b + ':' + a; if (conn.has(key)) return conn.get(key);
+      const fa = W[a], fb = W[b]; let yes = false;
+      for (let i = 0; i < fa.length && !yes; i += 2) for (let j = 0; j < fb.length; j += 2) { const dy = (fa[i] - fb[j]) * 1.1054, dx = (fa[i + 1] - fb[j + 1]) * 0.943; if (dx * dx + dy * dy < 100) { yes = true; break; } }   // < 10 m
+      conn.set(key, yes); return yes;
+    }
+    return {
+      roads: W.length,
+      candidates(lat, lng, R) {
+        const out = [], seen = new Set(), c = Math.ceil(R / 50) + 1, cy = Math.floor(lat / G), cx = Math.floor(lng / G);
+        for (let y = cy - c; y <= cy + c; y++) for (let x = cx - c; x <= cx + c; x++) for (const id of grid.get(y * 1e6 + x) || []) {
+          if (seen.has(id)) continue; seen.add(id);
+          const p = project(id, lat, lng); if (p && p.d <= R) out.push(p);
+        }
+        return out.sort((a, b) => a.d - b.d).slice(0, 6);
+      },
+      connected,
+      // the road's own points between two positions on it (so the path follows curves and corners)
+      between(a, b) {
+        if (a.way !== b.way || a.seg === b.seg) return [];
+        const f = W[a.way], out = [];
+        if (a.seg < b.seg) for (let s = a.seg + 1; s <= b.seg; s++) out.push([f[2 * s] / 1e5, f[2 * s + 1] / 1e5]);
+        else for (let s = a.seg; s > b.seg; s--) out.push([f[2 * s] / 1e5, f[2 * s + 1] / 1e5]);
+        return out.length > 40 ? [] : out;
+      },
+    };
+  }
+  const mdist = (a, b) => { const dy = (a[0] - b[0]) * 110540, dx = (a[1] - b[1]) * 111320 * Math.cos(a[0] * RAD); return Math.sqrt(dx * dx + dy * dy); };
+  /** pts: [[lat,lng]], times: [t]. Returns { path, times } following the roads (or the input where no road is near). */
+  function matchDrive(pts, times, ridx, P) {
+    const R = (P && P.snapRadius) || 40, sigma = 12, beta = 20, strength = P && P.snapDrive != null ? P.snapDrive : 1;
+    if (!ridx || strength <= 0 || pts.length < 2) return { path: pts.slice(), times: times.slice() };
+    const C = pts.map((p) => { const c = ridx.candidates(p[0], p[1], R); c.push({ off: true, d: R, lat: p[0], lng: p[1] }); return c; });   // "off road" is always possible
+    const emit = (c) => (c.off ? 0.5 * (R / sigma) ** 2 + 3 : 0.5 * (c.d / sigma) ** 2);
+    let cost = C[0].map(emit); const back = [null];
+    for (let i = 1; i < pts.length; i++) {
+      const step = mdist(pts[i - 1], pts[i]), nc = [], bk = [];
+      for (const b of C[i]) {
+        let best = Infinity, arg = 0;
+        C[i - 1].forEach((a, j) => {
+          let tr = Math.abs(mdist([a.lat, a.lng], [b.lat, b.lng]) - step) / beta;
+          if (!a.off && !b.off && a.way !== b.way) tr += ridx.connected(a.way, b.way) ? 0.7 : 5;
+          if (!!a.off !== !!b.off) tr += 1;
+          if (cost[j] + tr < best) { best = cost[j] + tr; arg = j; }
+        });
+        nc.push(best + emit(b)); bk.push(arg);
+      }
+      cost = nc; back.push(bk);
+    }
+    let k = cost.indexOf(Math.min(...cost)); const pick = new Array(pts.length);
+    for (let i = pts.length - 1; i >= 0; i--) { pick[i] = C[i][k]; if (i > 0) k = back[i][k]; }
+    const path = [], ts = [];
+    for (let i = 0; i < pts.length; i++) {
+      const m = pick[i], p = pts[i];
+      const q = m.off ? p : [p[0] + (m.lat - p[0]) * strength, p[1] + (m.lng - p[1]) * strength];
+      if (i > 0 && strength >= 0.99 && P.densify !== false && !m.off && !pick[i - 1].off) {      // follow the road between the two positions
+        const mid = ridx.between(pick[i - 1], m), a = path[path.length - 1];
+        if (mid.length) {
+          const total = mid.reduce((s, v, j) => s + mdist(j ? mid[j - 1] : a, v), 0) + mdist(mid[mid.length - 1], q);
+          let acc = 0;
+          mid.forEach((v, j) => { acc += mdist(j ? mid[j - 1] : a, v); path.push(v); ts.push(times[i - 1] + (times[i] - times[i - 1]) * (total ? acc / total : 0)); });
+        }
+      }
+      path.push(q); ts.push(times[i]);
+    }
+    return { path, times: ts };
+  }
+  async function roadIndexFor(points, opts) {
+    opts = opts || {};
+    const need = new Map();
+    for (const p of points) { const [x, y] = rtileOf(p[0], p[1]); need.set('r' + RZ + '/' + x + '/' + y, [x, y]); if (need.size >= MAX_ROAD_TILES) break; }
+    if (!need.size) return null;
+    const tiles = [], used = [];
+    for (const [k, xy] of need) {
+      let v = null; try { v = await getTile(k); } catch (e) { v = null; }
+      if (v) { tiles.push(v.data); used.push(k); continue; }
+      if (opts.offline) continue;
+      try {
+        while (inflight) await inflight;
+        let done; inflight = new Promise((r) => (done = r));
+        const data = await downloadRoads(xy[0], xy[1]).finally(() => { inflight = null; done(); });
+        tiles.push(data);
+        try { await putTile(k, data, JSON.stringify(data).length); } catch (e) { /* storage full: use it this time only */ }
+      } catch (e) { if (opts.onError) opts.onError(e); }
+    }
+    if (used.length) touch(used).catch(() => {});
+    evict().catch(() => {});
+    return tiles.length ? buildRoadIndex(tiles) : null;
+  }
+
+  const api = { roadIndexFor, buildRoadIndex, matchDrive, compactRoads, indexFor, buildIndex, refinePath, compact, tileOf, tileBox, evict, usage, clearAll, getDay, putDay, ENDPOINT, KEEP_DAYS, MAX_BYTES };
   if (typeof module !== 'undefined') module.exports = api; else { root.TL = root.TL || {}; root.TL.osm = api; }
 })(typeof self !== 'undefined' ? self : this);
