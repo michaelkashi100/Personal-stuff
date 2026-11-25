@@ -36,6 +36,7 @@
     wAccel: 0.6, aWalk: 1.5, aBike: 2.5, aCar: 4,
     wSignal: 1, srcGps: 0.5, srcFused: 0, srcUnknown: -0.3, srcWifi: -0.7, srcCell: -2,
     wAlt: 0.7, altTol: 25,
+    dwellMin: 3,                   // minutes: a stop this long makes any turn (even going back the way you came) normal
     wBuild: 1, lambdaBuild: 2, stopZoneMin: 2, wRoad: 0.5,
     urbanBoost: 2,
     wFam: 0.5, famDays: 3,
@@ -47,7 +48,7 @@
   const SLIDERS = [
     ['lag', 'Look ahead (fixes)', 0, 30, 1, 'Decision'], ['jumpRate', 'How often GPS jumps', 0.01, 0.4, 0.01, 'Decision'], ['keep', 'Leave out below', 0.05, 0.9, 0.05, 'Decision'],
     ['wFit', 'Distance from path: weight', 0, 2, 0.1, 'Position'], ['sigmaMin', 'Best possible accuracy (m)', 2, 30, 1, 'Position'], ['jumpRadius', 'Typical jump size (m)', 30, 500, 10, 'Position'],
-    ['wTurn', 'Turns: weight', 0, 2, 0.1, 'Turns'], ['kWalk', 'Walking: turn cost', 0, 4, 0.1, 'Turns'], ['kBike', 'Cycling: turn cost', 0, 4, 0.1, 'Turns'], ['kCar', 'Driving: turn cost', 0, 6, 0.1, 'Turns'],
+    ['wTurn', 'Turns: weight', 0, 2, 0.1, 'Turns'], ['kWalk', 'Walking: turn cost', 0, 4, 0.1, 'Turns'], ['kBike', 'Cycling: turn cost', 0, 4, 0.1, 'Turns'], ['kCar', 'Driving: turn cost', 0, 6, 0.1, 'Turns'], ['dwellMin', 'A stop this long excuses any turn (min)', 0.5, 30, 0.5, 'Turns'],
     ['wSpeed', 'Speed: weight', 0, 2, 0.1, 'Motion'], ['vWalk', 'Walking: top speed (m/s)', 1, 6, 0.1, 'Motion'], ['vBike', 'Cycling: top speed (m/s)', 4, 20, 0.5, 'Motion'], ['vCar', 'Driving: top speed (m/s)', 15, 70, 1, 'Motion'],
     ['wAccel', 'Acceleration: weight', 0, 2, 0.1, 'Motion'],
     ['wSignal', 'Signal quality: weight', 0, 2, 0.1, 'Signal'], ['srcWifi', 'Wi-Fi position', -3, 1, 0.1, 'Signal'], ['srcCell', 'Cell-tower position', -4, 1, 0.1, 'Signal'],
@@ -225,12 +226,22 @@
       const rawV = new Float64Array(m), lCons = new Float64Array(m);
       // speeds over a ~5-fix baseline: GPS noise between two neighbouring fixes would otherwise look like extra speed
       for (let k = 1; k < m; k++) { const b = Math.max(0, k - 5); rawV[k] = hyp(X[k] - X[b], Y[k] - Y[b]) / Math.max(0.5, (T[k] - T[b]) / 1000); }
+      // typical speed around each fix, looked at separately just before and just after it (a low quantile: jumps only ever
+      // add speed). The faster side counts, so the first fixes after you leave a long stop are not judged at standstill speed.
+      const lowQ = (from, to) => {
+        const vals = [], st = Math.max(1, Math.ceil((to - from + 1) / 16));
+        for (let q = Math.max(1, from); q <= to; q += st) vals.push(rawV[q]);
+        if (!vals.length) return 0;
+        vals.sort((a, b) => a - b); return vals[Math.floor(vals.length * 0.3)];
+      };
       for (let k = 0, lo = 0, hi = 0; k < m; k++) {
         while (T[lo] < T[k] - 60000) lo++;
         while (hi + 1 < m && T[hi + 1] <= T[k] + 60000) hi++;
-        const vals = [], st = Math.max(1, Math.ceil((hi - lo + 1) / 24)); for (let q = Math.max(1, lo); q <= hi; q += st) vals.push(rawV[q]);   // <= 24 samples
-        vals.sort((a, b) => a - b);
-        localV[k] = vals.length ? vals[Math.floor(vals.length * 0.3)] : 0;   // a low quantile: jumps only ever add speed
+        // speeds are measured over 5 fixes, so neither side may use a stretch that touches this fix itself
+        const back = k > 1 ? lowQ(lo, k - 1) : 0, f0 = k + 6, f1 = Math.min(m - 1, hi + 6), fwd = f0 <= f1 ? lowQ(f0, f1) : 0;
+        const hiV = Math.max(back, fwd), loV = Math.min(back, fwd);
+        // starting or stopping (one side much faster): the faster side; otherwise both sides together (steadier)
+        localV[k] = hiV > 3 * Math.max(0.5, loV) ? hiV : lowQ(lo, f1);
       }
       const SG = new Float64Array(m); for (let k = 0; k < m; k++) SG[k] = Math.sqrt(sig2(seg[k]));
       const sg = (k) => SG[k];
@@ -283,6 +294,16 @@
         PI[k] = clamp(P.jumpRate * (1 + P.urbanBoost * URB[k]) * ((f.wifiN || 0) >= 10 ? 1.5 : 1) * (spoof[i] && f.src !== 'wifi' && f.src !== 'cell' ? 3 : 1), 0.005, 0.9);
       }
       const ITER = n > 100000 ? 2 : 3;                        // very long histories: one refinement less
+      // time spent around each fix (within ~40 m): at work all day, then back the way you came, is not a suspicious U-turn
+      const DWELL = new Float64Array(m);
+      for (let k = 0; k < m; k++) {
+        const Rr = Math.max(40, 2 * SG[k]);
+        let lo = k, hi = k;
+        while (lo > 0 && k - lo < 400 && hyp(X[lo - 1] - X[k], Y[lo - 1] - Y[k]) <= Rr) lo--;
+        while (hi < m - 1 && hi - k < 400 && hyp(X[hi + 1] - X[k], Y[hi + 1] - Y[k]) <= Rr) hi++;
+        DWELL[k] = T[hi] - T[lo];
+      }
+      const dwellExcuse = (k) => (P.dwellMin > 0 ? clamp(1 - DWELL[k] / (P.dwellMin * 60000), 0, 1) : 1);
       for (let it = 0; it < ITER; it++) {
         for (let k = 0; k < m; k++) R[k] = sig2(seg[k]) / Math.max(w[k], 0.02);
         const qOf = it === 0 ? () => 2.0 : (k) => { const md = modeOfSpeed(localV[k]); return md === MODE_STILL ? 0.05 : md === MODE_WALK ? 0.5 : md === MODE_BIKE ? 1.2 : md === MODE_CAR ? 4 : 20; };
@@ -318,7 +339,7 @@
             if (a > 0 && b > 0) {
               const cos = (ax * bx + ay * by) / (a * b), g = clamp((Math.min(a, b) - sg) / sg, 0, 1);
               const kap = md <= MODE_WALK ? P.kWalk : md === MODE_BIKE ? P.kBike : md === MODE_CAR ? P.kCar : P.kCar * 2;
-              lTurn = -kap * (1 - cos) * g * gap;
+              lTurn = -kap * (1 - cos) * g * gap * dwellExcuse(k);
             }
             if (f.v >= 0) lSpeed -= 0.5 * sq((f.v - speed[k]) / (2 + 0.3 * speed[k])) * gap;
             const amax = md === MODE_WALK ? P.aWalk : md === MODE_BIKE ? P.aBike : P.aCar;

@@ -412,7 +412,7 @@
   // The replay runs on its own "animation clock" (ms): a trip takes 4.5-14 s depending on distance, a stay is a ~2 s
   // fast-forward of the real clock. Everything on screen is a pure function of that clock.
   const MIN_STAY = 2 * 60000, STAY_MS = 2200, Z_IN = 17;
-  let zoomBias = 0, scenes = { items: [], V: 0 }, frac = 0, heading = 0, playing = false, lastTs = 0, raf = 0;
+  let lastTarget = null, zoomBias = 0, scenes = { items: [], V: 0 }, frac = 0, heading = 0, playing = false, lastTs = 0, raf = 0;
   let trail, trailGlow, trailColor = '', carEl, badgeEl, badgeMode = '', hudKey = '', litKey = null;
 
   const sm = (x) => x * x * (3 - 2 * x);                                  // smoothstep
@@ -449,8 +449,29 @@
     const { k, u } = pointAt(s, d);
     return s.times[k - 1] + (s.times[k] - s.times[k - 1]) * u;
   }
-  const startBearing = (s) => { const d = Math.max(25, s.len * 0.02); return bearing(s.path[0], pointAt(s, d).ll); };
-  const endBearing = (s) => { const d = Math.max(25, s.len * 0.02); return bearing(pointAt(s, s.len - d).ll, s.path[s.path.length - 1]); };
+  // Direction of travel along a leg, sampled every ~8 m from a chord of +-L metres (longer for vehicles) and smoothed,
+  // so a wobble or a short hook in the recorded path never swings the car around.
+  function headTrack(s) {
+    if (s.hd !== undefined) return s.hd;
+    if (!(s.len > 0)) return (s.hd = null);
+    const n = Math.max(2, Math.min(600, Math.ceil(s.len / 8))), step = s.len / (n - 1);
+    const L = Math.max(15, Math.min(s.mode === 'drive' || s.mode === 'transit' || s.mode === 'flight' ? 70 : 30, s.len / 3));
+    const vx = new Float64Array(n), vy = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      const d = i * step, a = pointAt(s, Math.max(0, d - L)).ll, b = pointAt(s, Math.min(s.len, d + L)).ll;
+      const dx = (b[1] - a[1]) * Math.cos((a[0] * Math.PI) / 180), dy = b[0] - a[0], m = Math.hypot(dx, dy) || 1;
+      vx[i] = dx / m; vy[i] = dy / m;
+    }
+    const h = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      let sx = 0, sy = 0; for (let j = Math.max(0, i - 3); j <= Math.min(n - 1, i + 3); j++) { sx += vx[j]; sy += vy[j]; }
+      h[i] = sx === 0 && sy === 0 ? (i ? h[i - 1] : 0) : ((Math.atan2(sx, sy) * 180) / Math.PI + 360) % 360;
+    }
+    return (s.hd = { step, h, L });
+  }
+  const headingAt = (s, d) => { const t = headTrack(s); return t ? t.h[Math.max(0, Math.min(t.h.length - 1, Math.round(d / t.step)))] : null; };
+  const startBearing = (s) => { const t = headTrack(s); return t ? headingAt(s, Math.min(s.len, t.L)) : null; };
+  const endBearing = (s) => { const t = headTrack(s); return t ? headingAt(s, Math.max(0, s.len - t.L)) : null; };
 
   function buildScenes(d) {
     const end = d + DAY, raw = [];
@@ -487,8 +508,7 @@
     for (const it of scenes.items) { if (it.v0 <= v) s = it; else break; }
     if (s.kind === 'stay') { const f = sm(Math.min(1, Math.max(0, (v - s.v0) / s.vlen))); return { s, f, p: 0, t: s.t0 + (s.t1 - s.t0) * f, ll: [s.lat, s.lng] }; }
     const g = s.group, p = easeMove(Math.min(1, Math.max(0, (v - g.v0) / g.vlen))), dg = g.len * p, d = Math.max(0, Math.min(s.len, dg - s.g0));
-    const cur = pointAt(s, d), step = Math.max(25, s.len * 0.02);
-    const bear = s.len > 0 ? bearing(pointAt(s, d - step / 2).ll, pointAt(s, d + step).ll) : null;
+    const cur = pointAt(s, d), bear = headingAt(s, d);
     return { s, f: p, p, t: timeAtDist(s, d), ll: cur.ll, k: cur.k, bear, left: Math.max(0, g.len - dg) };
   }
 
@@ -585,7 +605,9 @@
     trail.setLatLngs(pts); trailGlow.setLatLngs(pts);
     // heading: face the direction of travel; while parked, turn toward the next route
     const target = s.kind === 'move' ? bear : s.next && s.next.kind === 'move' ? startBearing(s.next) : s.prev && s.prev.kind === 'move' ? endBearing(s.prev) : null;
-    if (target != null) heading = (heading + (((target - heading + 540) % 360) - 180) * 0.3 + 360) % 360;
+    lastTarget = target;
+    // playing: turn smoothly; paused or scrubbing: face the right way at once (no half-finished turn left behind)
+    if (target != null) heading = playing ? (heading + (((target - heading + 540) % 360) - 180) * 0.3 + 360) % 360 : target;
     if (carEl) carEl.style.transform = 'rotate(' + heading.toFixed(1) + 'deg)';
     // marker: a car only while driving, a mode badge for other movement, a dot (pulsing when parked) otherwise
     const mode = s.kind === 'move' ? s.mode : '', el = marker.getElement();
@@ -881,7 +903,7 @@
   };
   window.__tlPt = (lat, lng) => { const q = map.latLngToContainerPoint([lat, lng]), r = $('map').getBoundingClientRect(); return { x: r.left + q.x, y: r.top + q.y }; };   // test hook
   window.__tlLab = () => (lab && lab.res ? { n: lab.F.length, sel: lab.sel, c: Array.from(lab.res.c), why: lab.res.why, fixes: lab.F.map((f) => [f.lat, f.lng]) } : null);   // test hook (read-only)
-  window.__tl = () => { const el = marker && marker.getElement(), cur = scenes.items.length ? locate(frac * scenes.V).s : null; return { zoom: map.getZoom(), heading, frac, V: scenes.V, items: scenes.items.map((s) => (s.kind === 'move' ? s.mode : 'stay')), cur: cur ? (cur.kind === 'move' ? cur.mode : 'stay') : null, car: !!(el && el.classList.contains('drive')), timeline: timeline.length, day: curDay, playing, dragging: !!(map && map.dragging.enabled()), live, follow, zoomBias, speed, centre: map ? [map.getCenter().lat, map.getCenter().lng] : null, me }; };   // test hook (read-only)
+  window.__tl = () => { const el = marker && marker.getElement(), cur = scenes.items.length ? locate(frac * scenes.V).s : null; return { zoom: map.getZoom(), heading, frac, V: scenes.V, items: scenes.items.map((s) => (s.kind === 'move' ? s.mode : 'stay')), cur: cur ? (cur.kind === 'move' ? cur.mode : 'stay') : null, car: !!(el && el.classList.contains('drive')), timeline: timeline.length, day: curDay, playing, dragging: !!(map && map.dragging.enabled()), live, follow, zoomBias, speed, target: lastTarget, centre: map ? [map.getCenter().lat, map.getCenter().lng] : null, me }; };   // test hook (read-only)
 
   async function dataInfo() {
     const el = $('dinfo'); if (!el) return;
