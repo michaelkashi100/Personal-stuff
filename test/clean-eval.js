@@ -116,6 +116,21 @@ ok(C.regionOf(51.5, -0.12) === 'abroad' && C.regionOf(41.0, 28.97) === 'abroad' 
   const a = cityWalk(31, { jumpRate: 0, clusters: 0 }).F, b = cityWalk(31, { jumpRate: 0, clusters: 0 }).F.map((f) => ({ ...f, t: f.t + 86400000 })), cc = cityWalk(31, { jumpRate: 0, clusters: 0 }).F.map((f) => ({ ...f, t: f.t + 2 * 86400000 }));
   const all = a.concat(b, cc), first = C.clean(all), fam = C.familiarity(all, first), res = C.clean(all, { familiar: fam });
   const inc = res.parts.filter((p) => p && p.fam > 0).length; ok(inc > all.length * 0.5, 'a route walked on other days gets the "usual route" bonus (' + inc + ' fixes)'); }
+{ // a day at work: drive north, 8 hours there, drive back south the same way. The U-turn is excused by the stay;
+  // the same U-turn without a stay (a quick out-and-back) is not.
+  const day = [], t0w = Date.UTC(2026, 10, 25, 6), step = 15 * 25;   // 25 m/s, a fix every 15 s
+  const at2 = (y, t) => { const [lat, lng] = [32.0853 + y / 110540, 34.7818]; return { t, lat, lng, acc: 6 }; };
+  let t = t0w; for (let y = 0; y <= 6000; y += step) { day.push(at2(y, t)); t += 15000; }
+  for (let k = 0; k < 96; k++) { day.push(at2(6000 + (Math.random() - 0.5) * 20, t)); t += 300000; }
+  for (let y = 6000 - step; y >= 0; y -= step) { day.push(at2(y, t)); t += 15000; }
+  const r = C.clean(day), arriveI = Math.round(6000 / step), leaveI = arriveI + 96;
+  const worst = Math.min(...[arriveI, arriveI + 1, leaveI, leaveI + 1].map((i) => r.parts[i].turn));
+  ok(worst > -0.3 && [arriveI, leaveI + 1].every((i) => r.c[i] > 0.7), 'going back the way you came after 8 hours at work is not a suspicious turn (worst turn ' + worst.toFixed(2) + ')');
+  const quick = []; t = t0w; for (let y = 0; y <= 3000; y += step) { quick.push(at2(y, t)); t += 15000; }
+  quick.push(at2(3000 + step, t)); t += 15000;
+  for (let y = 3000; y >= 0; y -= step) { quick.push(at2(y, t)); t += 15000; }
+  const rq = C.clean(quick), qi = Math.round(3000 / step) + 1;
+  ok(rq.parts[qi].turn < -1, 'the same U-turn without a stop still counts against the fix (' + rq.parts[qi].turn.toFixed(2) + ')'); }
 { // speed: 1000 fixes, timing
   const big = []; for (let s = 40; s < 60; s++) big.push(...cityWalk(s).F.map((f) => ({ ...f, t: f.t + (s - 40) * 86400000 })));
   const t = Date.now(); C.clean(big); const ms = Date.now() - t;

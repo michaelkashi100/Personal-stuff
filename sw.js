@@ -1,4 +1,4 @@
-const CACHE = 'timeline-v23';
+const CACHE = 'timeline-v24';
 const ASSETS = ['./', 'index.html', 'app.js', 'parser.js', 'clean.js', 'osm.js', 'analyze.js', 'manifest.json', 'lib/leaflet.js', 'lib/leaflet.css', 'icons/icon-192.png', 'icons/icon-512.png'];
 // 'reload' bypasses the browser's HTTP cache (GitHub Pages sends max-age=600), so an install never stores stale files.
 self.addEventListener('install', (e) => {
