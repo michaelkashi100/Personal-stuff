@@ -36,6 +36,7 @@
     wAccel: 0.6, aWalk: 1.5, aBike: 2.5, aCar: 4,
     wSignal: 1, srcGps: 0.5, srcFused: 0, srcUnknown: -0.3, srcWifi: -0.7, srcCell: -2,
     wAlt: 0.7, altTol: 25,
+    snapDrive: 1, snapRadius: 40,  // driving: how firmly the path is put on the road, and how far away a road may be
     dwellMin: 3,                   // minutes: a stop this long makes any turn (even going back the way you came) normal
     wBuild: 1, lambdaBuild: 2, stopZoneMin: 2, wRoad: 0.5,
     urbanBoost: 2,
@@ -53,7 +54,7 @@
     ['wAccel', 'Acceleration: weight', 0, 2, 0.1, 'Motion'],
     ['wSignal', 'Signal quality: weight', 0, 2, 0.1, 'Signal'], ['srcWifi', 'Wi-Fi position', -3, 1, 0.1, 'Signal'], ['srcCell', 'Cell-tower position', -4, 1, 0.1, 'Signal'],
     ['wAlt', 'Altitude: weight', 0, 2, 0.1, 'Altitude'], ['altTol', 'Altitude tolerance (m)', 5, 80, 1, 'Altitude'],
-    ['wBuild', 'Buildings: weight', 0, 2, 0.1, 'Surroundings'], ['urbanBoost', 'Dense city: more jumps', 0, 5, 0.1, 'Surroundings'], ['stopZoneMin', 'Inside allowed near stops (min)', 0, 10, 0.5, 'Surroundings'], ['wRoad', 'Pull toward streets & paths', 0, 1, 0.05, 'Surroundings'],
+    ['wBuild', 'Buildings: weight', 0, 2, 0.1, 'Surroundings'], ['urbanBoost', 'Dense city: more jumps', 0, 5, 0.1, 'Surroundings'], ['stopZoneMin', 'Inside allowed near stops (min)', 0, 10, 0.5, 'Surroundings'], ['wRoad', 'Pull toward streets & paths', 0, 1, 0.05, 'Surroundings'], ['snapDrive', 'Driving: snap to roads', 0, 1, 0.05, 'Surroundings'], ['snapRadius', 'Driving: farthest road (m)', 10, 80, 5, 'Surroundings'],
     ['wFam', 'Usual routes: weight', 0, 2, 0.1, 'Habits'], ['wifiMinMin', 'Same Wi-Fi = still after (min)', 1, 30, 1, 'Habits'], ['abroadMinH', 'Shortest real trip abroad (h)', 1, 48, 1, 'Places'],
   ];
 

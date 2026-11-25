@@ -755,6 +755,8 @@
       const L0 = lab, pts = []; for (let i = 0; i < lab.F.length; i++) if (!lab.res.still[i] && lab.res.route[i] && lab.res.c[i] >= lab.res.P.keep) pts.push(lab.res.route[i]);
       const st = $('labStats'); if (st && pts.length) st.textContent += ' · loading buildings…';
       TL.osm.indexFor(pts, { onError: () => {} }).then((idx) => { if (lab !== L0) return; lab.idx = idx; runLab(false); if (!idx && pts.length) { const e = $('labStats'); if (e) e.textContent += ' · no building data (offline?)'; } }).catch(() => {});
+      const carPts = []; for (let i = 0; i < lab.F.length; i++) if (lab.res.mode[i] === 3 && lab.res.route[i]) carPts.push(lab.res.route[i]);
+      if (carPts.length) TL.osm.roadIndexFor(carPts, { onError: () => {} }).then((r) => { if (lab !== L0 || !r) return; lab.roads = r; runLab(false); }).catch(() => {});
     }
   }
   function closeLab() {
@@ -770,6 +772,15 @@
     const today = dayKey(Date.now()) === curDay;
     const res = F.length ? TL.cleanApi.clean(F, { params: lab.P, trusted: readLS('tl-trust', []), placeWifi: readLS('tl-wifi', []), marks: readLS('tl-marks', []), live: today && !!NATIVE, buildings: lab.idx || undefined }) : null;
     if (res && lab.idx) TL.osm.refinePath(res.route, lab.idx, res.still, res.P);
+    if (res && lab.roads && res.P.snapDrive > 0) {             // driving stretches go onto the roads
+      for (let i = 0; i < F.length;) {
+        if (res.mode[i] !== 3 || !res.route[i]) { i++; continue; }
+        let j = i; while (j + 1 < F.length && res.mode[j + 1] === 3) j++;
+        const idxs = []; for (let k = i; k <= j; k++) if (res.route[k] && res.c[k] >= res.P.keep) idxs.push(k);
+        if (idxs.length >= 2) { const mm = TL.osm.matchDrive(idxs.map((k) => res.route[k]), idxs.map((k) => F[k].t), lab.roads, Object.assign({}, res.P, { densify: false })); idxs.forEach((k, n) => (res.route[k] = mm.path[n])); }
+        i = j + 1;
+      }
+    }
     lab.F = F; lab.res = res; lab.ms = performance.now() - t0;
     drawLab(fit); labStats();
   }
@@ -801,7 +812,7 @@
     const el = $('labStats'); if (!el || !lab.res) { if (el) el.textContent = 'No GPS fixes on this day.'; return; }
     const r = lab.res; let doubt = 0, ign = 0, low = 0;
     for (let i = 0; i < lab.F.length; i++) { if (r.why[i] === 'never' || r.why[i] === 'abroad') ign++; else if (r.c[i] < 0.5) doubt++; if (r.c[i] < r.P.keep) low++; }
-    el.textContent = lab.F.length + ' fixes · ' + doubt + ' doubted' + (ign ? ' · ' + ign + ' ignored (impossible place)' : '') + ' · ' + low + ' left out' + (lab.idx ? ' · ' + lab.idx.buildings + ' buildings' : '') + ' · ' + Math.round(lab.ms) + ' ms';
+    el.textContent = lab.F.length + ' fixes · ' + doubt + ' doubted' + (ign ? ' · ' + ign + ' ignored (impossible place)' : '') + ' · ' + low + ' left out' + (lab.idx ? ' · ' + lab.idx.buildings + ' buildings' : '') + (lab.roads ? ' · ' + lab.roads.roads + ' roads' : '') + ' · ' + Math.round(lab.ms) + ' ms';
   }
   function labDetail(i) {
     const el = $('labDetail'), r = lab.res, f = lab.F[i], parts = r.parts[i];
@@ -925,11 +936,16 @@
         const r0 = TL.cleanApi.clean(F, ctx), moving = [];
         for (let i = 0; i < F.length; i++) if (!r0.still[i] && r0.route[i] && r0.c[i] >= P.keep) moving.push(r0.route[i]);
         const idx = await TL.osm.indexFor(moving);
-        if (!idx) return;
-        const res = TL.cleanApi.clean(F, Object.assign({ buildings: idx }, ctx)), route = TL.osm.refinePath(res.route.slice(), idx, res.still, P);
+        const res = TL.cleanApi.clean(F, Object.assign(idx ? { buildings: idx } : {}, ctx)), route = idx ? TL.osm.refinePath(res.route.slice(), idx, res.still, P) : res.route.slice();
+        // driving: put the path on the roads (map matching)
+        const inDrive = (t) => moves.some((m) => m.mode === 'drive' && t > m.t0 && t < m.t1), drivePts = [];
+        for (let i = 0; i < F.length; i++) if (route[i] && inDrive(F[i].t)) drivePts.push(route[i]);
+        const ridx = drivePts.length && P.snapDrive > 0 ? await TL.osm.roadIndexFor(drivePts) : null;
+        if (!idx && !ridx) return;
         paths = moves.map((m) => {
           const pts = [], ts = [];
           for (let i = 0; i < F.length; i++) if (F[i].t > m.t0 && F[i].t < m.t1 && route[i] && res.c[i] >= P.keep) { pts.push(route[i]); ts.push(F[i].t); }
+          if (pts.length >= 2 && m.mode === 'drive' && ridx) { const mm = TL.osm.matchDrive(pts, ts, ridx, P); return { t0: m.t0, path: mm.path, times: mm.times }; }
           return pts.length >= 2 ? { t0: m.t0, path: pts, times: ts } : null;
         });
         TL.osm.putDay(key, paths).catch(() => {});
@@ -948,7 +964,7 @@
   function osmCard() {
     if (!TL.osm) return '';
     const sw = `<button class="switch" id="swOsm" role="switch" aria-checked="${osmOn()}" aria-label="Use building outlines" type="button"><span></span></button>`;
-    return `<div class="card"><h2>Buildings &amp; streets</h2><div class="setting"><div class="t"><b>Use building outlines</b><span>The likely path avoids walking through buildings and follows streets. Outlines come from OpenStreetMap for the squares you passed through on the day you view; the server only learns which square.</span></div>${sw}</div><p class="note" id="osmInfo"></p><div class="actions"><button class="btn" id="osmClear" type="button">${svg('trash')}Clear downloaded outlines</button></div></div>`;
+    return `<div class="card"><h2>Buildings &amp; streets</h2><div class="setting"><div class="t"><b>Use building outlines and roads</b><span>The likely path avoids walking through buildings, follows streets, and while driving it is put on the roads. Outlines come from OpenStreetMap for the squares you passed through on the day you view; the server only learns which square.</span></div>${sw}</div><p class="note" id="osmInfo"></p><div class="actions"><button class="btn" id="osmClear" type="button">${svg('trash')}Clear downloaded outlines</button></div></div>`;
   }
   function osmInfo() {
     const el = $('osmInfo'); if (!el || !TL.osm) return;
@@ -967,6 +983,7 @@
     return false;
   };
   window.__tlPt = (lat, lng) => { const q = map.latLngToContainerPoint([lat, lng]), r = $('map').getBoundingClientRect(); return { x: r.left + q.x, y: r.top + q.y }; };   // test hook
+  window.__tlMoves = () => timeline.filter((it) => it.kind === 'move').map((it) => ({ mode: it.mode, refined: !!it.refined, path: it.path }));   // test hook (read-only)
   window.__tlLab = () => (lab && lab.res ? { n: lab.F.length, sel: lab.sel, c: Array.from(lab.res.c), why: lab.res.why, fixes: lab.F.map((f) => [f.lat, f.lng]) } : null);   // test hook (read-only)
   window.__tl = () => { const el = marker && marker.getElement(), cur = scenes.items.length ? locate(frac * scenes.V).s : null; return { zoom: map.getZoom(), heading, frac, V: scenes.V, items: scenes.items.map((s) => (s.kind === 'move' ? s.mode : 'stay')), cur: cur ? (cur.kind === 'move' ? cur.mode : 'stay') : null, car: !!(el && el.classList.contains('drive')), timeline: timeline.length, day: curDay, playing, dragging: !!(map && map.dragging.enabled()), live, follow, zoomBias, speed, target: lastTarget, centre: map ? [map.getCenter().lat, map.getCenter().lng] : null, me }; };   // test hook (read-only)
 
