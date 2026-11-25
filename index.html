@@ -191,6 +191,11 @@
   .lab-g { border-top:1px solid var(--line); padding:6px 0; } .lab-g summary { cursor:pointer; font-weight:650; font-size:14px; padding:6px 0; color:var(--text); }
   .lab-s { display:block; padding:6px 0; } .lab-s > span { display:flex; justify-content:space-between; font-size:13px; color:var(--text-2); } .lab-s b { font-weight:560; } .lab-s output { font-variant-numeric:tabular-nums; color:var(--text); }
   .lab-s input[type=range] { width:100%; accent-color:var(--accent); height:28px; }
+  .lab-mark { display:flex; align-items:center; gap:8px; margin-top:10px; flex-wrap:wrap; } .lab-mark span { font-size:12.5px; color:var(--muted); margin-right:auto; }
+  .lab-mark .chipbtn[data-mark="0"][aria-pressed="true"] { background:rgba(251,113,133,.18); border-color:#fb7185; }
+  .lab-mark .chipbtn[data-mark="1"][aria-pressed="true"] { background:rgba(74,222,128,.16); border-color:#4ade80; }
+  .tune-bar { height:8px; border-radius:6px; background:var(--surface-3); overflow:hidden; margin-top:8px; } .tune-bar i { display:block; height:100%; background:var(--accent); transition:width .3s; }
+  .linkbtn { background:none; border:0; padding:0; color:var(--accent); font:inherit; text-decoration:underline; }
   #locate.on { background:#3b82f6; color:#fff; border-color:transparent; }
   @keyframes pulse { 0% { transform:scale(.5); opacity:.9; } 100% { transform:scale(2.3); opacity:0; } }
 
@@ -304,7 +309,7 @@
       <li><span class="tag" data-icon="shield"></span><div><b>Stays on this phone</b>Your file is read here and never uploaded.</div></li>
       <li><span class="tag" data-icon="route"></span><div><b>Understands movement</b>Stops, walks, rides and drives are told apart automatically.</div></li>
     </ul>
-    <p class="build">build 24 &middot; smarter GPS cleaning</p>
+    <p class="build">build 25 &middot; smarter GPS cleaning</p>
   </div>
 </section>
 
@@ -347,6 +352,7 @@
 <script src="parser.js"></script>
 <script src="clean.js"></script>
 <script src="osm.js"></script>
+<script src="tune.js"></script>
 <script src="analyze.js"></script>
 <script src="app.js"></script>
 </body>
