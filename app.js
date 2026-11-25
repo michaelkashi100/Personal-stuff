@@ -144,7 +144,7 @@
   // ---- GPS cleaning settings (Path lab), stretches you confirmed, and which Wi-Fi network is which place ----
   const readLS = (k, d) => { try { const v = JSON.parse(localStorage.getItem(k) || 'null'); return v == null ? d : v; } catch (e) { return d; } };
   const writeLS = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
-  const cleanOpts = () => ({ params: readLS('tl-clean', {}), trusted: readLS('tl-trust', []), placeWifi: readLS('tl-wifi', []) });
+  const cleanOpts = () => ({ params: readLS('tl-clean', {}), trusted: readLS('tl-trust', []), placeWifi: readLS('tl-wifi', []), marks: readLS('tl-marks', []) });
   function learnWifi(tl) {                                     // a stay on a Wi-Fi network teaches its place that network (scrambled code only)
     const list = readLS('tl-wifi', []); let changed = false;
     for (const it of tl) if (it.kind === 'stay' && it.wifi && it.t1 - it.t0 >= 20 * 60000) {
@@ -768,7 +768,7 @@
     if (!lab) return;
     const F = labDayFixes(curDay), t0 = performance.now();
     const today = dayKey(Date.now()) === curDay;
-    const res = F.length ? TL.cleanApi.clean(F, { params: lab.P, trusted: readLS('tl-trust', []), placeWifi: readLS('tl-wifi', []), live: today && !!NATIVE, buildings: lab.idx || undefined }) : null;
+    const res = F.length ? TL.cleanApi.clean(F, { params: lab.P, trusted: readLS('tl-trust', []), placeWifi: readLS('tl-wifi', []), marks: readLS('tl-marks', []), live: today && !!NATIVE, buildings: lab.idx || undefined }) : null;
     if (res && lab.idx) TL.osm.refinePath(res.route, lab.idx, res.still, res.P);
     lab.F = F; lab.res = res; lab.ms = performance.now() - t0;
     drawLab(fit); labStats();
@@ -808,8 +808,71 @@
     const rows = parts ? Object.entries(parts).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).map(([k, v]) => `<li><span>${LAB_PART[k]}</span><b class="${v >= 0 ? 'pos' : 'neg'}">${v >= 0 ? '+' : ''}${v.toFixed(1)}</b></li>`).join('') : '';
     el.innerHTML = `<div class="lab-det"><div class="lab-det-h"><span class="dot" style="background:${confColor(r.c[i])}"></span><b>${Math.round(r.c[i] * 100)}% sure this is real</b><span class="t">${clock(f.t)} · ±${Math.round(f.acc)} m${f.src ? ' · ' + f.src.toUpperCase() : ''}${f.alt != null ? ' · ' + Math.round(f.alt) + ' m high' : ''}</span></div>` +
       (r.why[i] && LAB_WHY[r.why[i]] ? `<p class="note">${LAB_WHY[r.why[i]]}</p>` : '') +
-      (rows ? `<ul class="lab-parts">${rows}</ul><p class="note">Positive numbers say "looks real", negative "looks like a jump". Added together they give the confidence.</p>` : '') + '</div>';
+      (rows ? `<ul class="lab-parts">${rows}</ul><p class="note">Positive numbers say "looks real", negative "looks like a jump". Added together they give the confidence.</p>` : '') +
+      `<div class="lab-mark"><span>You know better?</span><button type="button" class="chipbtn" data-mark="0" aria-pressed="${markOf(f.t) === false}">✕ Wrong</button><button type="button" class="chipbtn" data-mark="1" aria-pressed="${markOf(f.t) === true}">✓ Right</button></div></div>`;
     el.hidden = false;
+    el.querySelectorAll('[data-mark]').forEach((b) => (b.onclick = () => { setMark(f, b.dataset.mark === '1'); buzz(); runLab(false); labDetail(i); renderTuneBox(); }));
+  }
+  // Your marks: a fix you call wrong is always left out, one you call right is always kept, and tuning learns from them.
+  const markOf = (t) => { const m = readLS('tl-marks', []).find((x) => x.t === t); return m ? !!m.ok : null; };
+  function setMark(f, ok) {
+    let ms = readLS('tl-marks', []); const cur = ms.find((x) => x.t === f.t);
+    if (cur && !!cur.ok === ok) ms = ms.filter((x) => x !== cur);          // tapping the same answer again removes the mark
+    else if (cur) cur.ok = ok;
+    else ms.push({ t: f.t, lat: +f.lat.toFixed(6), lng: +f.lng.toFixed(6), ok });
+    writeLS('tl-marks', ms.slice(-1000));
+  }
+
+  // ---- Tuning (tune.js in a worker): measure your GPS noise, test settings on your own days, agree with your marks ----
+  let tuneJob = null;
+  function renderTuneBox() {
+    const el = $('labTune'); if (!el) return;
+    const ms = readLS('tl-marks', []), bad = ms.filter((m) => !m.ok).length, good = ms.length - bad;
+    let html = `<p class="note" style="margin-top:0">Measures how your GPS wobbles at places you stay, then tries settings on your last 30 days: it hides some readings and keeps the settings that best predict them${ms.length ? ', and that agree with your marks' : ''}.</p>` +
+      `<p class="note">Your marks: ${bad} wrong · ${good} right${ms.length ? ' · <button type="button" class="linkbtn" id="marksClear">clear</button>' : ' (tap a dot, then Wrong / Right)'}</p>`;
+    if (tuneJob && tuneJob.running) html += `<div class="tune-bar"><i style="width:${Math.round((tuneJob.frac || 0) * 100)}%"></i></div><p class="note">${esc(tuneJob.msg || 'Working…')}</p><div class="actions"><button class="btn" id="tuneCancel" type="button">Cancel</button></div>`;
+    else if (tuneJob && tuneJob.result) {
+      const r = tuneJob.result, b = r.before, a = r.after, n = r.report.noise, label = (k) => (TL.cleanApi.SLIDERS.find((x) => x[0] === k) || [k, k])[1];
+      const ch = Object.keys(r.changed);
+      const gain = b.err - a.err, big = gain >= Math.max(0.3, 0.02 * b.err) || (a.nMarks && a.agree > b.agree);
+      html += `<div class="lab-det"><b>${big ? 'Better settings found' : ch.length ? 'Only a small difference' : 'Your settings are already right'}</b>` +
+        `<p class="note">Distance to the hidden readings: ${b.err.toFixed(2)} m → ${a.err.toFixed(2)} m${a.nMarks ? ` · marks agreed: ${Math.round(b.agree * 100)}% → ${Math.round(a.agree * 100)}%` : ''}</p>` +
+        (n ? `<p class="note">Your GPS: wobbles about ±${n.wobble.toFixed(0)} m where you stay, jumps in ${n.jumpPct.toFixed(1)}% of readings${n.jumpSize ? ', typically ' + Math.round(n.jumpSize) + ' m away' : ''} (from ${n.stays} long stays).</p>` : '<p class="note">Not enough long stays yet to measure your GPS noise.</p>') +
+        (ch.length ? `<ul class="lab-parts">${ch.map((k) => `<li><span>${esc(label(k))}</span><b>${TL.cleanApi.DEFAULTS[k] !== undefined && lab ? esc(String(lab.P[k])) : ''} → ${esc(String(r.changed[k]))}</b></li>`).join('')}</ul>` : '') +
+        `<div class="actions"><button class="btn" id="tuneDiscard" type="button">Discard</button><button class="btn primary" id="tuneApply" type="button"${ch.length ? '' : ' disabled'}>${svg('check')}Use these</button></div></div>`;
+    } else if (tuneJob && tuneJob.error) html += `<p class="note">Could not tune: ${esc(tuneJob.error)}</p>`;
+    if (!(tuneJob && (tuneJob.running || tuneJob.result))) html += `<div class="actions"><button class="btn primary" id="tuneStart" type="button">${svg('sliders')}Tune automatically</button></div>`;
+    el.innerHTML = html;
+    const on = (id, fn) => { const b = $(id); if (b) b.onclick = fn; };
+    on('tuneStart', startTune);
+    on('tuneCancel', () => { if (tuneJob && tuneJob.worker) tuneJob.worker.terminate(); tuneJob = null; renderTuneBox(); });
+    on('tuneDiscard', () => { tuneJob = null; renderTuneBox(); });
+    on('tuneApply', () => {
+      const r = tuneJob.result; tuneJob = null;
+      if (lab) closeLab();
+      const diff = {}; for (const k in r.params) if (r.params[k] !== TL.cleanApi.DEFAULTS[k]) diff[k] = r.params[k];
+      writeLS('tl-clean', diff); buzz(); reanalyze('Tuned settings saved. Every day now uses them.');
+    });
+    on('marksClear', () => { writeLS('tl-marks', []); renderTuneBox(); if (lab) runLab(false); });
+  }
+  function startTune() {
+    if (typeof Worker === 'undefined' || !data) { toast('Tuning is not available here', 2500); return; }
+    const all = labAllFixes(); if (all.length < 50) { toast('Not enough GPS readings yet to tune', 2500); return; }
+    const from = all[all.length - 1].t - 30 * DAY;
+    let F = all.filter((f) => f.t >= from); if (F.length > 20000) F = F.slice(F.length - 20000);
+    const stays = timeline.filter((it) => it.kind === 'stay' && it.t1 >= F[0].t && it.t1 - it.t0 >= 30 * 60000).map((it) => ({ t0: it.t0, t1: it.t1 }));
+    const w = new Worker('tune-worker.js');
+    tuneJob = { running: true, worker: w, msg: 'Starting…', frac: 0 };
+    w.onmessage = (e) => {
+      const m = e.data; if (!tuneJob || tuneJob.worker !== w) return;
+      if (m.progress) { tuneJob.msg = m.progress.msg; tuneJob.frac = m.progress.frac; const bar = document.querySelector('#labTune .tune-bar i'); if (bar) { bar.style.width = Math.round(m.progress.frac * 100) + '%'; bar.parentNode.nextElementSibling.textContent = m.progress.msg; } else renderTuneBox(); }
+      else if (m.done) { w.terminate(); tuneJob = { result: m.done }; renderTuneBox(); buzz(); }
+      else if (m.error) { w.terminate(); tuneJob = { error: m.error }; renderTuneBox(); }
+    };
+    w.onerror = (e) => { w.terminate(); tuneJob = { error: e.message || 'the tuning stopped' }; renderTuneBox(); };
+    w.postMessage({ F: F.map((f) => ({ t: f.t, lat: f.lat, lng: f.lng, acc: f.acc, v: f.v, alt: f.alt, vacc: f.vacc, src: f.src, sat: f.sat, cn0: f.cn0, wifiN: f.wifiN, wifiH: f.wifiH })),
+      ctx: { stays, start: Object.assign({}, lab ? lab.P : readLS('tl-clean', {})), marks: readLS('tl-marks', []), trusted: readLS('tl-trust', []), placeWifi: readLS('tl-wifi', []) } });
+    renderTuneBox();
   }
   function renderLabPanel() {
     const S = TL.cleanApi.SLIDERS, groups = [];
@@ -820,6 +883,7 @@
       `<div class="grab"></div><div class="lab-h"><div><h3>Path lab</h3><span>${dayLabel(curDay, { weekday: 'short', day: 'numeric', month: 'short' })}</span></div><button class="iconbtn" id="labClose" type="button" aria-label="Close the Path lab">${svg('check')}</button></div>` +
       `<div class="lab-toggles">${[['raw', 'Raw GPS'], ['path', 'Likely path'], ['dots', 'Confidence']].map(([k, t]) => `<button type="button" class="chipbtn" data-show="${k}" aria-pressed="${lab.show[k]}">${t}</button>`).join('')}</div>` +
       `<div class="lab-legend"><span>jump</span><i></i><span>real</span></div><p class="note" id="labStats"></p><div id="labDetail" hidden></div>` +
+      `<details class="lab-g" open><summary>Tune automatically</summary><div id="labTune"></div></details>` +
       groups.map((g) => `<details class="lab-g"${g.name === 'Decision' ? ' open' : ''}><summary>${g.name}</summary>` + g.items.map(([key, label, min, max, st]) =>
         `<label class="lab-s"><span><b>${label}</b><output id="lv_${key}">${fmtv(lab.P[key], st)}</output></span><input type="range" min="${min}" max="${max}" step="${st}" value="${lab.P[key]}" data-key="${key}" data-st="${st}" aria-label="${label}"></label>`).join('') + '</details>').join('') +
       `<div class="actions"><button class="btn" id="labReset" type="button">${svg('refresh')}Defaults</button><button class="btn primary" id="labApply" type="button">${svg('check')}Use everywhere</button></div>` +
@@ -831,6 +895,7 @@
     }));
     $('lab').querySelectorAll('[data-show]').forEach((b) => (b.onclick = () => { lab.show[b.dataset.show] = !lab.show[b.dataset.show]; b.setAttribute('aria-pressed', String(lab.show[b.dataset.show])); drawLab(false); }));
     $('labClose').onclick = closeLab;
+    renderTuneBox();
     $('labReset').onclick = () => { lab.P = Object.assign({}, TL.cleanApi.DEFAULTS); renderLabPanel(); runLab(false); toast('Back to the default settings (not saved yet)', 2200); };
     $('labApply').onclick = () => {
       const diff = {}; for (const k in lab.P) if (lab.P[k] !== TL.cleanApi.DEFAULTS[k]) diff[k] = lab.P[k];

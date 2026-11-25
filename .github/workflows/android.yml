@@ -3,7 +3,7 @@ name: Build Android app
 on:
   push:
     branches: [main, 'ccr-*']
-    paths: ['android/**', '.github/scripts/**', 'index.html', 'app.js', 'parser.js', 'clean.js', 'osm.js', 'analyze.js', 'manifest.json', 'lib/**', 'icons/**', '.github/workflows/android.yml']
+    paths: ['android/**', '.github/scripts/**', 'index.html', 'app.js', 'parser.js', 'clean.js', 'osm.js', 'tune.js', 'tune-worker.js', 'analyze.js', 'manifest.json', 'lib/**', 'icons/**', '.github/workflows/android.yml']
   workflow_dispatch:
 
 permissions:

@@ -214,6 +214,8 @@
     const segs = segments(F, keepIdx);
     const sig2 = (i) => sq(Math.max(F[i].acc || 20, 1)) + sq(P.sigmaMin);
     const fam = opts.familiar || null;
+    // fixes you marked in the Path lab: [{t, ok}] -> Map(t -> true / false)
+    const marks = opts.marks && opts.marks.length ? new Map(opts.marks.map((x) => [x.t, !!x.ok])) : null;
 
     for (const seg of segs) {
       const m = seg.length, lat0 = F[seg[0]].lat, lng0 = F[seg[0]].lng, kx = 111320 * Math.cos(lat0 * RAD), ky = 110540;
@@ -357,7 +359,9 @@
           const tPrior = Math.log((1 - pi) / pi), tFit = P.wFit * clamp(lFit, -6, 3), tTurn = P.wTurn * clamp(lTurn, -6, 3), tSpeed = P.wSpeed * clamp(lSpeed, -6, 3),
             tAccel = P.wAccel * clamp(lAccel, -6, 3), tSig = P.wSignal * clamp(lSig, -6, 3), tAlt = P.wAlt * clamp(lAlt, -6, 3), tBuild = P.wBuild * clamp(lBuild, -6, 3), tFam = P.wFam * clamp(lFam, -6, 3);
           const z = tPrior + tFit + tTurn + tSpeed + tAccel + tSig + tAlt + tBuild + tFam;
-          c[i] = 1 / (1 + Math.exp(-z)); w[k] = c[i];
+          c[i] = 1 / (1 + Math.exp(-z));
+          if (marks) { const mk = marks.get(f.t); if (mk === false) { c[i] = 0; why[i] = 'marked'; } else if (mk === true) c[i] = Math.max(c[i], 0.99); }   // your own marks win
+          w[k] = c[i];
           if (it === ITER - 1 && !opts.noParts) parts[i] = { prior: tPrior, fit: tFit, turn: tTurn, speed: tSpeed, accel: tAccel, signal: tSig, alt: tAlt, build: tBuild, fam: tFam };
         }
       }
