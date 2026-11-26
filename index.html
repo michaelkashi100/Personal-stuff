@@ -125,6 +125,7 @@
   .playbtn { width:54px; height:54px; border-radius:50%; flex:none; display:grid; place-items:center; background:linear-gradient(180deg,#86cffa,#4fb3f0); color:var(--accent-ink); box-shadow:var(--glow); transition:transform .12s var(--ease),filter .2s; }
   .playbtn:hover { filter:brightness(1.06); } .playbtn:active { transform:scale(.93); }
   .playbtn .ic { width:24px; height:24px; }
+  .playbtn.loading { background:conic-gradient(var(--accent) var(--p,0%), rgba(92,188,246,.25) 0); }
   #barwrap { position:relative; flex:1; min-width:0; height:46px; border-radius:var(--r-md); background:var(--surface-2); border:1px solid var(--line); overflow:hidden; }
   #bar,#fill { position:absolute; inset:0; }
   .seg { position:absolute; top:9px; bottom:9px; border-radius:6px; opacity:.95; min-width:4px; box-shadow:0 0 0 1px var(--surface-2); }
@@ -309,7 +310,7 @@
       <li><span class="tag" data-icon="shield"></span><div><b>Stays on this phone</b>Your file is read here and never uploaded.</div></li>
       <li><span class="tag" data-icon="route"></span><div><b>Understands movement</b>Stops, walks, rides and drives are told apart automatically.</div></li>
     </ul>
-    <p class="build">build 27 &middot; smarter GPS cleaning</p>
+    <p class="build">build 28 &middot; smarter GPS cleaning</p>
   </div>
 </section>
 

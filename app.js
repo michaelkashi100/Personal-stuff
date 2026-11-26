@@ -377,7 +377,7 @@
     const i = dayList.indexOf(curDay) + delta;
     if (i < 0 || i >= dayList.length) return false;
     showDay(dayList[i]); banner(dayList[i]);
-    if (play) startPlay();
+    if (play) playWhenReady();
     return true;
   }
   function banner(d) {
@@ -565,7 +565,7 @@
     carEl = marker.getElement().querySelector('.carwrap'); badgeEl = marker.getElement().querySelector('.badge');
     renderBar(items, byMode, still);
     $('scrub').value = 0; seek(0);
-    setTimeout(() => { if (curDay === d && !playing) refineDay(d); }, 400);
+    setTimeout(() => { if (curDay === d && !playing) refineDay(d); if (curDay === d && !live) prefetchDay(d); }, 400);
   }
 
   // Timeline bar: coloured blocks = movement by mode, hatched blocks = time spent still (with its duration).
@@ -638,7 +638,68 @@
   // While the replay plays the camera is driven by the animation, so the map ignores touches and the replay keeps going.
   // Pause it and the map is free to pan and zoom again.
   function lockMap(on) { $('map').classList.toggle('locked', on); if (!map) return; for (const h of ['dragging', 'touchZoom', 'doubleClickZoom', 'scrollWheelZoom', 'boxZoom', 'keyboard', 'tapHold']) if (map[h]) map[h][on ? 'disable' : 'enable'](); }
-  function stop() { playing = false; cancelAnimationFrame(raf); setPlayUi(); lockMap(false); }
+  function stop() { if (waitingPlay != null) { waitingPlay = null; loadingUi(null); $('toast').style.display = 'none'; } playing = false; cancelAnimationFrame(raf); setPlayUi(); lockMap(false); }
+  // ---- Map pieces for the replay: download everything the camera will show before it starts moving ----
+  // The replay's camera path is known in advance (cameraFor at every moment of the day), so the map squares it will
+  // need are listed and fetched first (6 at a time); while one day plays, the next day's are fetched in the background.
+  const tileUrl = (z, x, y) => 'https://tile.openstreetmap.org/' + z + '/' + x + '/' + y + '.png';
+  const tilesDone = new Set(), dayTiles = new Map();
+  function fetchTile(url) {
+    return new Promise((res) => {
+      if (tilesDone.has(url)) return res(true);
+      const img = new Image();
+      img.onload = () => { tilesDone.add(url); res(true); }; img.onerror = () => res(false);
+      img.src = url;
+    });
+  }
+  function tilesFor(sc) {
+    const urls = new Set(), size = map.getSize(), saved = scenes, N = 800;
+    scenes = sc;
+    try {
+      if (!sc.items.length) return urls;
+      for (let i = 0; i <= N; i++) {
+        const { s, p, ll } = locate((i / N) * sc.V), cam = cameraFor(s, p, ll);
+        const z = Math.max(2, Math.min(19, cam.zoom + (s.kind === 'stay' ? zoomBias : Math.min(0, zoomBias))));
+        for (const tz of new Set([Math.round(z), Math.min(12, Math.round(z))])) {     // the sharp layer and the coarse one under it
+          const scale = Math.pow(2, tz - z), c = map.project(cam.center, tz), hx = (size.x * scale) / 2, hy = (size.y * scale) / 2, max = Math.pow(2, tz);
+          const m = 1;                                                                   // one extra square around the view
+          for (let y = Math.floor((c.y - hy) / 256) - m; y <= Math.floor((c.y + hy) / 256) + m; y++) if (y >= 0 && y < max)
+            for (let x = Math.floor((c.x - hx) / 256) - m; x <= Math.floor((c.x + hx) / 256) + m; x++) urls.add(tileUrl(tz, ((x % max) + max) % max, y));
+        }
+      }
+    } finally { scenes = saved; }
+    return urls;
+  }
+  function prefetchDay(d) {
+    let job = dayTiles.get(d);
+    if (job) return job;
+    const urls = [...tilesFor(d === curDay ? scenes : buildScenes(d))].slice(0, 1500);
+    job = { total: urls.length, done: 0, listeners: new Set() };
+    let i = 0;
+    const worker = async () => { while (i < urls.length) { const u = urls[i++]; await fetchTile(u); job.done++; job.listeners.forEach((f) => f(job)); } };
+    job.promise = Promise.all([1, 2, 3, 4, 5, 6].map(worker)).then(() => job);
+    dayTiles.set(d, job);
+    return job;
+  }
+  let waitingPlay = null;
+  function loadingUi(job) {
+    const b = $('play'); if (!job) { b.classList.remove('loading'); b.style.removeProperty('--p'); return; }
+    const pc = job.total ? Math.round((100 * job.done) / job.total) : 100;
+    b.classList.add('loading'); b.style.setProperty('--p', pc + '%');
+    toast('Loading the map for this day… ' + pc + '% · tap ▶ to start now', 30000);
+  }
+  function playWhenReady() {
+    if (!scenes.items.length) return;
+    const d = curDay, job = prefetchDay(d);
+    if (job.done >= job.total || (navigator.webdriver && !window.__forcePrefetch)) return startPlay();   // automated tests start at once (map squares still load)
+    waitingPlay = d; loadingUi(job);
+    const onP = (j) => { if (waitingPlay === d) loadingUi(j); };
+    job.listeners.add(onP);
+    const go = () => { job.listeners.delete(onP); if (waitingPlay !== d) return; waitingPlay = null; loadingUi(null); $('toast').style.display = 'none'; startPlay(); };
+    job.promise.then(go); setTimeout(go, 25000);          // offline or slow: do not wait forever
+  }
+  window.__tlTiles = () => ({ day: curDay != null && dayTiles.get(curDay) ? { total: dayTiles.get(curDay).total, done: dayTiles.get(curDay).done } : null, waiting: waitingPlay != null });   // test hook
+
   function startPlay() {
     if (!scenes.items.length) return;
     playing = true; setPlayUi(); lockMap(true); lastTs = performance.now(); cancelAnimationFrame(raf); raf = requestAnimationFrame(tick); keepAwake();
@@ -647,6 +708,7 @@
     if (!playing) return;
     const dt = Math.min(80, ts - lastTs); lastTs = ts;
     seek(Math.min(1, frac + (dt * speed) / scenes.V));
+    if (frac > 0.3 && autoNext) { const i = dayList.indexOf(curDay); if (i >= 0 && i + 1 < dayList.length && !dayTiles.has(dayList[i + 1])) prefetchDay(dayList[i + 1]); }   // the next day, in the background
     $('scrub').value = Math.round(frac * 100000);
     if (frac >= 1) {                                          // day finished: go on to the next day, never replay the same one
       if (autoNext && goDay(1, true)) return;
@@ -658,11 +720,12 @@
   $('play').onclick = () => {
     buzz();
     if (playing) return stop();
+    if (waitingPlay != null) { waitingPlay = null; loadingUi(null); $('toast').style.display = 'none'; startPlay(); return; }   // "start now"
     if (!scenes.items.length) return;
     leaveLive();
     if (frac >= 1 && goDay(1, true)) return;                  // pressing play on a finished day continues with the next one
     if (frac >= 1) frac = 0;
-    startPlay();
+    playWhenReady();
   };
 
   // ---- Gestures (what a swipe, pinch or tap does depends on the state) ----
