@@ -412,7 +412,7 @@
   // The replay runs on its own "animation clock" (ms): a trip takes 4.5-14 s depending on distance, a stay is a ~2 s
   // fast-forward of the real clock. Everything on screen is a pure function of that clock.
   const MIN_STAY = 2 * 60000, STAY_MS = 2200, Z_IN = 17;
-  let lastTarget = null, zoomBias = 0, scenes = { items: [], V: 0 }, frac = 0, heading = 0, playing = false, lastTs = 0, raf = 0;
+  let overview = true, lastTarget = null, zoomBias = 0, scenes = { items: [], V: 0 }, frac = 0, heading = 0, playing = false, lastTs = 0, raf = 0;
   let trail, trailGlow, trailColor = '', carEl, badgeEl, badgeMode = '', hudKey = '', litKey = null;
 
   const sm = (x) => x * x * (3 - 2 * x);                                  // smoothstep
@@ -515,6 +515,14 @@
   // Camera: zoomed in on the traveller by default; during a trip the view grows from "street level around the
   // marker" to "the whole trip", holds, then shrinks back. Interpolating the view *box* (not zoom and centre
   // separately) keeps the marker inside the frame. The same easing drives the speed along the trip.
+  // Overview: the whole day's path as large as the map allows (only the small clock in the corner to keep clear).
+  let fitKey = '';
+  function fitWholeDay() {
+    const b = scenes.bounds, sz = map.getSize(), key = curDay + ':' + sz.x + 'x' + sz.y;
+    if (!b || !b.isValid() || key === fitKey) return;
+    fitKey = key;
+    map.fitBounds(b, { paddingTopLeft: [16, 44], paddingBottomRight: [16, 16], maxZoom: Z_IN, animate: false });
+  }
   function cameraFor(s, p, carLL) {
     if (s.kind === 'stay') return { center: [s.lat, s.lng], zoom: Z_IN };
     const g = s.group, size = map.getSize(), sx = Math.max(50, size.x - 70), sy = Math.max(50, size.y - 90);
@@ -538,7 +546,7 @@
     '<rect x="5.5" y="3.5" width="3.5" height="2" rx="1" fill="#fde68a"/><rect x="15" y="3.5" width="3.5" height="2" rx="1" fill="#fde68a"/></svg></div>';
 
   function showDay(d) {
-    stop(); map.invalidateSize(); dayLayer.clearLayers(); hudKey = ''; trailColor = ''; heading = 0; badgeMode = ''; litKey = null; curDay = d; hudPlace = null;
+    stop(); map.invalidateSize(); dayLayer.clearLayers(); hudKey = ''; overview = true; fitKey = ''; trailColor = ''; heading = 0; badgeMode = ''; litKey = null; curDay = d; hudPlace = null;
     try { sessionStorage.setItem('tl-day', String(d)); } catch (e) {}
     $('day').value = String(d);
     $('hudDay').textContent = live ? 'Now' : dayLabel(d, { weekday: 'short', day: 'numeric', month: 'short' });
@@ -557,6 +565,7 @@
           .bindTooltip(esc(s.name) + ' · ' + clock(s.t0) + '–' + clock(s.t1) + ' (' + fmtDur(s.t1 - s.t0) + ')' + (phoneOn() && s.t1 > phoneSince ? ' · ' + fmtDur(phoneMs(Math.max(s.t0, phoneSince), s.t1)) + ' on phone' : '')).addTo(dayLayer);
       }
     }
+    scenes.bounds = L.latLngBounds(items.flatMap((s) => (s.kind === 'move' ? s.path : [[s.lat, s.lng]])));
     drawDots(d);
     trailGlow = L.polyline([], { weight: 13, opacity: 0.22, lineCap: 'round', interactive: false }).addTo(dayLayer);
     trail = L.polyline([], { weight: 5, opacity: 1, lineCap: 'round', interactive: false }).addTo(dayLayer);
@@ -591,10 +600,14 @@
     if (live) { renderLive(); return; }                         // live: the map belongs to you, the replay is only a day picker
     if (!scenes.items.length) { setHud('--:--', 'No trips on this day'); return; }
     const { s, f, p, t, ll, k, bear, left } = locate(fr * scenes.V);
-    const cam = cameraFor(s, p, ll);
-    // pinch while playing = zoom bias; zooming in is only applied while parked (on a trip the car must stay in frame)
-    const z = Math.max(2, Math.min(19, cam.zoom + (s.kind === 'stay' ? zoomBias : Math.min(0, zoomBias))));
-    map.setView(cam.center, z, { animate: false });
+    if (playing) overview = false;
+    if (overview) fitWholeDay();                                // not playing: the whole day's path fills the map
+    else {
+      const cam = cameraFor(s, p, ll);
+      // pinch while playing = zoom bias; zooming in is only applied while parked (on a trip the car must stay in frame)
+      const z = Math.max(2, Math.min(19, cam.zoom + (s.kind === 'stay' ? zoomBias : Math.min(0, zoomBias))));
+      map.setView(cam.center, z, { animate: false });
+    }
     marker.setLatLng(ll);
     // Routes of the current trip light up as they are driven; the progressive trail follows the current leg.
     const grp = s.kind === 'move' ? s.group : s.prev && s.prev.kind === 'move' ? s.prev.group : null, key = (grp ? scenes.items.indexOf(grp.legs[0]) : -1) + ':' + (s.kind === 'move' ? scenes.items.indexOf(s) : 'x');
@@ -622,10 +635,7 @@
   }
   let phoneTxt = null;
   function setHudPhone(txt) { if (txt === phoneTxt) return; phoneTxt = txt; const el = $('hudPhone'); el.hidden = !txt; el.innerHTML = txt ? svg('phone') + '<span>' + esc(txt) + '</span>' : ''; }
-  let thumbKey = '';
   function setHud(a, b, icon, color, thumb) {
-    const tk = thumb ? thumb[0].toFixed(5) + ',' + thumb[1].toFixed(5) : '';
-    if (tk !== thumbKey) { thumbKey = tk; const el = $('hudThumb'); el.innerHTML = thumb ? placeThumb(thumb[0], thumb[1], 150, 64) : ''; el.hidden = !thumb; }
     const key = a + '|' + b + '|' + (icon || '');
     if (key === hudKey) return;
     hudKey = key; $('hudTime').textContent = a; $('hudSub').textContent = b;
@@ -633,7 +643,7 @@
   }
 
   // ---- Playback ----
-  $('scrub').oninput = () => { leaveLive(); seek($('scrub').value / 100000); };
+  $('scrub').oninput = () => { leaveLive(); if (!playing) { overview = true; fitKey = ''; } seek($('scrub').value / 100000); };
   function setPlayUi() { const b = $('play'); b.innerHTML = svg(playing ? 'pause' : 'play', 'fill'); b.setAttribute('aria-label', playing ? 'Pause' : 'Play'); }
   // While the replay plays the camera is driven by the animation, so the map ignores touches and the replay keeps going.
   // Pause it and the map is free to pan and zoom again.
