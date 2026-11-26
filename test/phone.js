@@ -26,7 +26,7 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
   // park the replay inside a stay (first scene) and look at the HUD
   await p.click('#play'); await p.click('#play'); await p.waitForTimeout(100);
   await p.$eval('#scrub', (e) => { e.value = 1000; e.dispatchEvent(new Event('input', { bubbles: true })); }); await p.waitForTimeout(150);
-  ok(await p.isVisible('#hudPhone') && /on phone/.test(await p.textContent('#hudPhone')), 'HUD shows phone time while at a stop: ' + (await p.textContent('#hudPhone')));
+  ok(/on phone/.test(await p.textContent('#hudPhone')), 'phone time is tracked while at a stop (the HUD itself shows only the clock): ' + (await p.textContent('#hudPhone')));
   await p.$eval('#scrub', (e) => { e.value = 50000; e.dispatchEvent(new Event('input', { bubbles: true })); }); await p.waitForTimeout(150);
   await p.click('nav button[data-v=stats]'); await p.waitForTimeout(400);
   const card = await p.textContent('#statsView');

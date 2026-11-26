@@ -18,7 +18,7 @@
   /* ===== Design system =====
      Direction: a night-drive cockpit. Ink-blue ground, one sky-blue accent for "you", and a fixed set of mode colours
      (data, not decoration) that mean the same thing on the map, the bar, the chips and the stats.
-     Layout: full-bleed map, glass HUD top-left, a player sheet at the bottom; Insights is a single readable column. */
+     Layout: full-bleed map, a small clock top-left, a player sheet at the bottom; Insights is a single readable column. */
   :root {
     --bg:#080d18; --surface:rgba(14,21,37,.86); --surface-solid:#0e1525; --surface-2:#141d31; --surface-3:#1b2740;
     --line:rgba(148,163,184,.16); --line-strong:rgba(148,163,184,.3);
@@ -100,18 +100,43 @@
   .leaflet-tooltip:before { display:none; }
 
   /* ----- HUD ----- */
-  #hud { position:absolute; top:12px; left:12px; z-index:1000; min-width:156px; padding:10px 15px 12px; border-radius:var(--r-lg); background:var(--surface); -webkit-backdrop-filter:blur(14px); backdrop-filter:blur(14px); border:1px solid var(--line); box-shadow:var(--shadow-1); pointer-events:none; }
-  #hudDay { font-size:11px; letter-spacing:.09em; text-transform:uppercase; color:var(--muted); font-weight:650; }
-  #hudTime { font-size:32px; line-height:1.05; font-weight:720; letter-spacing:-.025em; font-variant-numeric:tabular-nums; margin-top:2px; }
-  #hudRow { display:flex; align-items:center; gap:9px; margin-top:8px; }
-  #hudIcon { --c:var(--accent); width:26px; height:26px; border-radius:9px; display:grid; place-items:center; color:var(--c); background:rgba(148,163,184,.14); background:color-mix(in srgb,var(--c) 22%,transparent); flex:none; }
-  #hudIcon .ic { width:16px; height:16px; }
-  #hudSub { font-size:13.5px; color:var(--text-2); font-weight:560; line-height:1.25; }
+  /* Just the clock, small, in the corner: everything else is on the map or in the bar below. */
+  #hud { position:absolute; top:10px; left:10px; z-index:1000; display:flex; align-items:center; gap:6px; padding:4px 10px; border-radius:999px; background:var(--surface); -webkit-backdrop-filter:blur(14px); backdrop-filter:blur(14px); border:1px solid var(--line); box-shadow:var(--shadow-1); pointer-events:none; }
+  #hudTime { font-size:15px; line-height:1.3; font-weight:700; letter-spacing:-.01em; font-variant-numeric:tabular-nums; }
+  #hudDay,#hudRow,#hudPhone,#hudThumb { display:none!important; }
   #dayBanner { position:absolute; left:50%; top:42%; z-index:1100; transform:translate(-50%,-50%); text-align:center; padding:16px 26px; border-radius:var(--r-xl); background:var(--surface); -webkit-backdrop-filter:blur(16px); backdrop-filter:blur(16px); border:1px solid var(--line-strong); box-shadow:var(--shadow-1); opacity:0; pointer-events:none; }
   #dayBanner b { display:block; font-size:22px; letter-spacing:-.02em; font-weight:720; }
   #dayBanner span { display:block; margin-top:2px; font-size:13px; color:var(--text-2); }
   #dayBanner.show { animation:banner 2.1s var(--ease) forwards; }
   @keyframes banner { 0% { opacity:0; transform:translate(-50%,-44%) scale(.96); } 14% { opacity:1; transform:translate(-50%,-50%) scale(1); } 78% { opacity:1; } 100% { opacity:0; transform:translate(-50%,-56%); } }
+
+  /* ----- the places of the day, and the story told stop by stop ----- */
+  .stoppin { background:none; border:0; }
+  .stop { --c:#e2e8f0; min-width:28px; height:28px; padding:0 6px; border-radius:999px; display:grid; place-items:center; background:var(--surface-solid); border:2.5px solid var(--c); color:var(--text); box-shadow:0 0 0 3px rgba(0,0,0,.3),0 0 14px color-mix(in srgb,var(--c) 55%,transparent); font:750 12.5px/1 var(--font); font-variant-numeric:tabular-nums; white-space:nowrap; transform:translateX(calc(14px - 50%)); width:max-content; }
+  .stop .ic { width:15px; height:15px; color:var(--c); }
+  .leaflet-tooltip.stoplbl { padding:2px 8px; font:650 11.5px var(--font); border-radius:8px; background:rgba(8,13,24,.78); box-shadow:none; pointer-events:none; max-width:150px; overflow:hidden; text-overflow:ellipsis; }
+  #story { position:absolute; left:0; right:0; bottom:0; z-index:1150; max-height:62%; overflow:auto; padding:16px 16px calc(16px + env(safe-area-inset-bottom)); background:linear-gradient(180deg,#131c30,#0c1322); border-top:1px solid var(--line-strong); border-radius:24px 24px 0 0; box-shadow:0 -14px 50px rgba(0,0,0,.55); animation:sheetup .28s var(--ease) both; }
+  #story[hidden] { display:none; }
+  body.story #map { bottom:var(--storyH,200px); }
+  body.story #controls, body.story #locate, body.story #labBtn, body.story #hudEdit { visibility:hidden; }
+  body.story #hudEdit { display:none; }
+  body.ovw #hud, body.ovw .leaflet-marker-icon.live { display:none; }
+  .sto-h { display:flex; gap:12px; align-items:center; }
+  .sto-h .grow { flex:1; min-width:0; }
+  .sto-h small { display:block; font-size:11px; letter-spacing:.09em; text-transform:uppercase; color:var(--muted); font-weight:650; }
+  .sto-h b { display:block; font-size:19px; font-weight:720; letter-spacing:-.015em; line-height:1.2; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .sto-h span { display:block; font-size:13px; color:var(--text-2); font-variant-numeric:tabular-nums; }
+  .sto-h.travel b { font-size:15.5px; }
+  .sto-ic { --c:var(--accent); width:42px; height:42px; border-radius:13px; display:grid; place-items:center; flex:none; color:var(--c); background:rgba(148,163,184,.14); background:color-mix(in srgb,var(--c) 20%,transparent); }
+  .iconbtn.sm { width:36px; height:36px; border-radius:12px; flex:none; }
+  .sto-facts { list-style:none; margin:14px 0 0; padding:0; display:flex; flex-direction:column; gap:10px; }
+  .sto-facts li { display:flex; gap:11px; align-items:flex-start; font-size:14px; color:var(--text-2); line-height:1.35; }
+  .sto-facts .ic { width:18px; height:18px; color:var(--accent); margin-top:1px; }
+  .sto-facts b { color:var(--text); font-weight:650; }
+  .sto-act { display:flex; gap:8px; margin-top:16px; }
+  .sto-act .btn { height:46px; padding:0 14px; }
+  .sto-act .btn.primary { flex:1; height:46px; font-size:15px; border-radius:var(--r-md); }
+  .sto-act .btn .ic { width:18px; height:18px; }
 
   /* ----- player sheet ----- */
   #controls { position:absolute; left:0; right:0; bottom:0; z-index:1000; padding:14px 14px calc(14px + env(safe-area-inset-bottom)); display:flex; flex-direction:column; gap:12px;
@@ -125,7 +150,6 @@
   .playbtn { width:54px; height:54px; border-radius:50%; flex:none; display:grid; place-items:center; background:linear-gradient(180deg,#86cffa,#4fb3f0); color:var(--accent-ink); box-shadow:var(--glow); transition:transform .12s var(--ease),filter .2s; }
   .playbtn:hover { filter:brightness(1.06); } .playbtn:active { transform:scale(.93); }
   .playbtn .ic { width:24px; height:24px; }
-  .playbtn.loading { background:conic-gradient(var(--accent) var(--p,0%), rgba(92,188,246,.25) 0); }
   #barwrap { position:relative; flex:1; min-width:0; height:46px; border-radius:var(--r-md); background:var(--surface-2); border:1px solid var(--line); overflow:hidden; }
   #bar,#fill { position:absolute; inset:0; }
   .seg { position:absolute; top:9px; bottom:9px; border-radius:6px; opacity:.95; min-width:4px; box-shadow:0 0 0 1px var(--surface-2); }
@@ -160,8 +184,6 @@
   .me .medot { position:absolute; left:3px; top:3px; width:16px; height:16px; border-radius:50%; background:#3b82f6; border:3px solid #fff; box-shadow:0 1px 6px rgba(0,0,0,.5); }
   .me .mepulse { position:absolute; left:0; top:0; width:22px; height:22px; border-radius:50%; background:#3b82f6; opacity:0; animation:mepulse 2.2s ease-out infinite; }
   @keyframes mepulse { 0% { transform:scale(.6); opacity:.5; } 100% { transform:scale(2.6); opacity:0; } }
-  #hudPhone { display:flex; align-items:center; gap:7px; margin-top:7px; font-size:12.5px; color:var(--text-2); font-weight:560; } #hudPhone[hidden] { display:none; } #hudPhone .ic { width:14px; height:14px; color:#a78bfa; }
-  #hudThumb { margin-top:9px; } #hudThumb[hidden] { display:none; }
   .thumb { position:relative; overflow:hidden; border-radius:12px; background:#1b2740; flex:none; border:1px solid var(--line-strong); max-width:100%; }
   .thumb img { position:absolute; width:256px; height:256px; max-width:none; user-select:none; -webkit-user-drag:none; pointer-events:none; }
   .thumb .tpin { position:absolute; left:50%; top:50%; width:13px; height:13px; margin:-7px 0 0 -7px; border-radius:50%; background:#ef4444; border:2.5px solid #fff; box-shadow:0 1px 6px rgba(0,0,0,.55); }
@@ -202,8 +224,7 @@
 
   body.on-stats #toast { bottom:calc(24px + env(safe-area-inset-bottom)); }
   /* ----- naming places ----- */
-  #hudTop { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:30px; margin:-2px -6px 0 0; }
-  #hudEdit { pointer-events:auto; height:30px; min-width:30px; padding:0 9px; border-radius:10px; display:inline-flex; align-items:center; justify-content:center; gap:5px; background:var(--surface-3); border:1px solid var(--line-strong); color:var(--text); font-weight:650; font-size:12px; }
+  #hudEdit { pointer-events:auto; height:24px; min-width:24px; margin-right:-6px; padding:0 7px; border-radius:999px; display:inline-flex; align-items:center; justify-content:center; gap:5px; background:var(--surface-3); border:1px solid var(--line-strong); color:var(--text); font-weight:650; font-size:12px; }
   #hudEdit[hidden] { display:none; }
   #hudEdit .ic { width:15px; height:15px; }
   #hudEdit.need { background:linear-gradient(180deg,#86cffa,#4fb3f0); color:var(--accent-ink); border-color:transparent; }
@@ -286,7 +307,7 @@
   #startRec[hidden] { display:none; }
   .empty { text-align:center; color:var(--muted); padding:30px 10px; font-size:14px; }
 
-  @media (max-width:360px) { nav button span.lbl { display:none; } #hudTime { font-size:28px; } }
+  @media (max-width:360px) { nav button span.lbl { display:none; } }
   @media (prefers-reduced-motion: reduce) { *, *:before, *:after { animation:none!important; transition:none!important; } }
 </style>
 </head>
@@ -310,7 +331,7 @@
       <li><span class="tag" data-icon="shield"></span><div><b>Stays on this phone</b>Your file is read here and never uploaded.</div></li>
       <li><span class="tag" data-icon="route"></span><div><b>Understands movement</b>Stops, walks, rides and drives are told apart automatically.</div></li>
     </ul>
-    <p class="build">build 28 &middot; smarter GPS cleaning</p>
+    <p class="build">build 29</p>
   </div>
 </section>
 
@@ -325,10 +346,11 @@
   <main>
     <div id="mapView">
       <div id="map"></div>
-      <div id="hud" aria-live="off"><div id="hudTop"><div id="hudDay"></div><button id="hudEdit" type="button" hidden><span data-icon="pencil"></span><span class="lbl"></span></button></div><div id="hudTime">--:--</div><div id="hudRow"><span id="hudIcon"></span><span id="hudSub"></span></div><div id="hudPhone" hidden></div><div id="hudThumb" hidden></div></div>
+      <div id="hud" aria-live="off"><div id="hudTime">--:--</div><button id="hudEdit" type="button" hidden><span data-icon="pencil"></span><span class="lbl"></span></button><div id="hudDay"></div><div id="hudRow"><span id="hudIcon"></span><span id="hudSub"></span></div><div id="hudPhone" hidden></div><div id="hudThumb" hidden></div></div>
       <button id="labBtn" class="iconbtn" type="button" aria-label="Path lab: raw GPS, confidence and settings"><span data-icon="sliders"></span></button>
       <button id="locate" class="iconbtn" type="button" aria-label="Show my location"><span data-icon="locate"></span></button>
       <div id="dayBanner" aria-hidden="true"><b></b><span></span></div>
+      <div id="story" hidden aria-live="polite"></div>
       <div id="controls">
         <div class="daynav">
           <button class="iconbtn" id="prevDay" type="button" aria-label="Previous day"><span data-icon="prev"></span></button>
