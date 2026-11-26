@@ -82,6 +82,10 @@
     sliders: '<line x1="4" x2="4" y1="21" y2="14"/><line x1="4" x2="4" y1="10" y2="3"/><line x1="12" x2="12" y1="21" y2="12"/><line x1="12" x2="12" y1="8" y2="3"/><line x1="20" x2="20" y1="21" y2="16"/><line x1="20" x2="20" y1="12" y2="3"/><line x1="2" x2="6" y1="14" y2="14"/><line x1="10" x2="14" y1="8" y2="8"/><line x1="18" x2="22" y1="16" y2="16"/>',
     pencil: '<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/>',
     check: '<polyline points="20 6 9 17 4 12"/>',
+    moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
+    sparkle: '<path d="M12 3l1.9 5.8L20 10l-6.1 1.2L12 17l-1.9-5.8L4 10l6.1-1.2z"/><path d="M19 17v4"/><path d="M17 19h4"/>',
+    history: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>',
+    x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
     trash: '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/>',
   };
   const svg = (name, cls) => '<svg class="ic' + (cls ? ' ' + cls : '') + '" viewBox="0 0 24 24" aria-hidden="true">' + (ICON[name] || '') + '</svg>';
@@ -521,7 +525,7 @@
     const b = scenes.bounds, sz = map.getSize(), key = curDay + ':' + sz.x + 'x' + sz.y;
     if (!b || !b.isValid() || key === fitKey) return;
     fitKey = key;
-    map.fitBounds(b, { paddingTopLeft: [16, 44], paddingBottomRight: [16, 16], maxZoom: Z_IN, animate: false });
+    map.fitBounds(b, { paddingTopLeft: [44, 60], paddingBottomRight: [60, 44], maxZoom: Z_IN, animate: false });
   }
   function cameraFor(s, p, carLL) {
     if (s.kind === 'stay') return { center: [s.lat, s.lng], zoom: Z_IN };
@@ -546,7 +550,7 @@
     '<rect x="5.5" y="3.5" width="3.5" height="2" rx="1" fill="#fde68a"/><rect x="15" y="3.5" width="3.5" height="2" rx="1" fill="#fde68a"/></svg></div>';
 
   function showDay(d) {
-    stop(); map.invalidateSize(); dayLayer.clearLayers(); hudKey = ''; overview = true; fitKey = ''; trailColor = ''; heading = 0; badgeMode = ''; litKey = null; curDay = d; hudPlace = null;
+    stop(); endStory(true); map.invalidateSize(); dayLayer.clearLayers(); hudKey = ''; overview = true; fitKey = ''; trailColor = ''; heading = 0; badgeMode = ''; litKey = null; curDay = d; hudPlace = null;
     try { sessionStorage.setItem('tl-day', String(d)); } catch (e) {}
     $('day').value = String(d);
     $('hudDay').textContent = live ? 'Now' : dayLabel(d, { weekday: 'short', day: 'numeric', month: 'short' });
@@ -554,17 +558,24 @@
     scenes = buildScenes(d);
     const items = scenes.items, byMode = {};
     let still = 0;
+    const pins = new Map(), stops = items.filter((s) => s.kind === 'stay');
     for (const s of items) {
       if (s.kind === 'move') {
         byMode[s.mode] = (byMode[s.mode] || 0) + s.len;
         s.line = L.polyline(s.path, { color: s.color, weight: 3, opacity: 0.4, dashArray: s.uncertain ? '2 8' : null, interactive: false }).addTo(dayLayer);
-      } else {
-        still += s.t1 - s.t0;
-        const r = Math.min(16, 6 + 3 * Math.sqrt((s.t1 - s.t0) / 3.6e6));            // bigger circle = longer stay
-        L.circleMarker([s.lat, s.lng], { radius: r, color: '#e2e8f0', weight: 1.5, fillColor: '#e2e8f0', fillOpacity: 0.16 })
-          .bindTooltip(esc(s.name) + ' · ' + clock(s.t0) + '–' + clock(s.t1) + ' (' + fmtDur(s.t1 - s.t0) + ')' + (phoneOn() && s.t1 > phoneSince ? ' · ' + fmtDur(phoneMs(Math.max(s.t0, phoneSince), s.t1)) + ' on phone' : '')).addTo(dayLayer);
-      }
+        // a wide invisible line on top makes the path easy to tap: it tells the story of that trip
+        L.polyline(s.path, { color: '#000', weight: 26, opacity: 0, interactive: true, bubblingMouseEvents: false }).on('click', () => storyFromLeg(s)).addTo(dayLayer);
+      } else still += s.t1 - s.t0;
     }
+    // The places are what matter: one numbered pin per place (a place visited twice today gets both numbers).
+    stops.forEach((s, i) => {
+      s.n = i + 1;
+      const key = s.place ? 'p' + s.place.id : s.lat.toFixed(4) + ',' + s.lng.toFixed(4), pin = pins.get(key);
+      if (pin) { pin.nums.push(s.n); pin.m.setIcon(stopIcon(pin.nums, pin.s)); return; }
+      const m = L.marker([s.lat, s.lng], { icon: stopIcon([s.n], s), keyboard: false, zIndexOffset: 400, bubblingMouseEvents: false }).on('click', () => storyAt(s, false)).addTo(dayLayer);
+      if (stops.length <= 12) m.bindTooltip(esc(stayName(s)), { permanent: true, direction: 'auto', offset: [0, 0], className: 'stoplbl', interactive: false });
+      pins.set(key, { m, nums: [s.n], s });
+    });
     scenes.bounds = L.latLngBounds(items.flatMap((s) => (s.kind === 'move' ? s.path : [[s.lat, s.lng]])));
     drawDots(d);
     trailGlow = L.polyline([], { weight: 13, opacity: 0.22, lineCap: 'round', interactive: false }).addTo(dayLayer);
@@ -597,6 +608,7 @@
   function seekInner(fr) {
     frac = fr;
     $('fill').style.width = fr * 100 + '%'; $('playhead').style.left = fr * 100 + '%';
+    document.body.classList.toggle('ovw', !live && overview && !playing && !story);   // whole day: no clock, no replay marker
     if (live) { renderLive(); return; }                         // live: the map belongs to you, the replay is only a day picker
     if (!scenes.items.length) { setHud('--:--', 'No trips on this day'); return; }
     const { s, f, p, t, ll, k, bear, left } = locate(fr * scenes.V);
@@ -640,6 +652,197 @@
     if (key === hudKey) return;
     hudKey = key; $('hudTime').textContent = a; $('hudSub').textContent = b;
     const hi = $('hudIcon'); hi.innerHTML = icon ? svg(icon) : ''; hi.style.setProperty('--c', color || 'var(--accent)'); hi.style.display = icon ? 'grid' : 'none';
+  }
+
+  // ---- Story: the day told stop by stop ----
+  // Tap the path: the trip plays (faster than the replay) up to the place it leads to, then a card tells you about that
+  // place and waits for "Next stop". Tap a pin: straight to that place's card.
+  const stopIcon = (nums, s) => {
+    const k = s.place ? placeKind(s.place) : null;
+    return L.divIcon({ className: 'stoppin', iconSize: [28, 28], html: '<div class="stop" style="--c:' + (k ? k.color : '#e2e8f0') + '">' + (k && nums.length === 1 && (k.id === 'home' || k.id === 'work') ? svg(k.icon) : '<b>' + nums.join('·') + '</b>') + '</div>' });
+  };
+  let story = null;                                            // { s: the stop shown, anim: running animation or null }
+  const stopsToday = () => scenes.items.filter((x) => x.kind === 'stay');
+  function setStoryH() {
+    const h = $('story').offsetHeight;
+    document.body.style.setProperty('--storyH', Math.max(0, h - 22) + 'px');
+    map.invalidateSize();
+  }
+  function storyFromLeg(leg) {
+    // the place this trip leads to (the stop right after its last leg)
+    let s = leg.next; while (s && s.kind === 'move') s = s.next;
+    if (!s) { const g = leg.group; storyAnim(g.v0, g.v0 + g.vlen, null); return; }
+    storyAt(s, true);
+  }
+  function storyAt(s, animate) {
+    buzz(); stop(); leaveLive();
+    const g = s.prev && s.prev.kind === 'move' ? s.prev.group : null;
+    if (animate && g) storyAnim(g.v0, s.v0 + 1, s);
+    else storyArrive(s);
+  }
+  function storyAnim(v0, v1, s) {
+    cancelAnimationFrame(story && story.anim ? story.anim.raf : 0);
+    overview = false; lockMap(true); document.body.classList.add('story');
+    const to = s ? stayName(s) : 'the end of the trip';
+    $('story').hidden = false;
+    $('story').innerHTML = '<div class="sto-h travel"><span class="sto-ic" style="--c:var(--accent)">' + svg('route') + '</span><div class="grow"><b>On the way to ' + esc(to) + '</b><span id="stoClock"></span></div><button class="chipbtn" id="stoSkip" type="button">Skip</button></div>';
+    setStoryH();
+    const dur = Math.max(1400, Math.min(5000, (v1 - v0) / 2.6)), a = { raf: 0, t0: performance.now() };
+    story = { s, anim: a };
+    $('stoSkip').onclick = () => finish();
+    const finish = () => { map.off('click', finish); if (story && story.anim === a) { cancelAnimationFrame(a.raf); story.anim = null; lockMap(false); if (s) storyArrive(s); else endStory(); } };
+    const step = (ts) => {
+      if (!story || story.anim !== a) return;
+      const u = Math.min(1, (ts - a.t0) / dur), v = v0 + (v1 - v0) * u;
+      seek(v / scenes.V); $('scrub').value = Math.round(frac * 100000);
+      const c = $('stoClock'); if (c) c.textContent = $('hudTime').textContent;
+      if (u >= 1) finish(); else a.raf = requestAnimationFrame(step);
+    };
+    a.raf = requestAnimationFrame(step);
+    map.on('click', finish);                                     // a tap on the map skips to the place
+  }
+  function storyArrive(s) {
+    if (story && story.anim) cancelAnimationFrame(story.anim.raf);
+    story = { s, anim: null }; overview = false; lockMap(false);
+    document.body.classList.add('story');
+    const all = stopsToday(), i = all.indexOf(s), nx = all[i + 1], p = s.place, k = p ? placeKind(p) : null, v = visitOf(s);
+    const stayed = v ? v.t1 - v.t0 : s.t1 - s.t0, a0 = v ? v.t0 : s.t0, a1 = v ? v.t1 : s.t1;
+    const when = (a0 < curDay ? 'Since ' + dayLabel(a0, { day: 'numeric', month: 'short' }) + ' ' + clock(a0) : 'Arrived ' + clock(a0)) + ' · ' + (a1 > curDay + DAY ? 'left ' + dayLabel(a1, { weekday: 'short' }) + ' ' + clock(a1) : 'left ' + clock(a1)) + ' · ' + fmtDur(stayed);
+    const facts = insightsFor(s).map((f) => '<li>' + svg(f.icon) + '<span>' + f.html + '</span></li>').join('');
+    const named = p && labelName(p);
+    $('story').hidden = false;
+    $('story').innerHTML =
+      '<div class="sto-h"><span class="sto-ic" style="--c:' + (k ? k.color : 'var(--accent)') + '">' + svg(k ? k.icon : 'pin') + '</span><div class="grow"><small>Stop ' + (i + 1) + ' of ' + all.length + '</small><b>' + esc(stayName(s)) + '</b><span>' + when + '</span></div><button class="iconbtn sm" id="stoClose" type="button" aria-label="Back to the whole day">' + svg('x') + '</button></div>' +
+      (facts ? '<ul class="sto-facts">' + facts + '</ul>' : '') +
+      '<div class="sto-act">' + (p ? '<button class="btn" id="stoName" type="button">' + svg('pencil') + (named ? 'Rename' : 'Name it') + '</button>' : '') +
+      '<button class="btn" id="stoPrev" type="button" aria-label="Previous stop"' + (i > 0 ? '' : ' disabled') + '>' + svg('prev') + '</button>' +
+      (nx ? '<button class="btn primary" id="stoNext" type="button">Next stop' + svg('next') + '</button>' : '<button class="btn primary" id="stoNext" type="button">' + svg('check') + 'Done</button>') + '</div>';
+    $('stoClose').onclick = () => { buzz(); endStory(); };
+    $('stoNext').onclick = () => { if (nx) storyAt(nx, true); else { buzz(); endStory(); } };
+    $('stoPrev').onclick = () => { if (i > 0) storyAt(all[i - 1], false); };
+    if ($('stoName')) $('stoName').onclick = () => openAsk([p]);
+    setStoryH();
+    seek((s.v0 + 1) / scenes.V); $('scrub').value = Math.round(frac * 100000);
+  }
+  function endStory(quiet) {
+    if (!story && $('story').hidden) return;
+    if (story && story.anim) cancelAnimationFrame(story.anim.raf);
+    story = null; $('story').hidden = true; $('story').innerHTML = '';
+    document.body.classList.remove('story'); lockMap(false);
+    if (map) map.invalidateSize();
+    if (!quiet) { overview = true; fitKey = ''; seek(frac); }
+  }
+  window.__story = () => (story ? { n: story.s && story.s.n, anim: !!story.anim, text: $('story').textContent } : null);   // test hook
+
+  // ---- Insights about a place, from everything recorded ----
+  let pIdx = null, pIdxFor = null;
+  function placeIndex() {
+    if (pIdxFor === timeline) return pIdx;
+    pIdxFor = timeline; pIdx = new Map();
+    let prev = null;
+    for (const it of timeline) {
+      if (it.kind !== 'stay' || !it.place || it.t1 - it.t0 < MIN_STAY) continue;
+      const p = it.place; let e = pIdx.get(p);
+      if (!e) pIdx.set(p, (e = { visits: [], from: new Map(), to: new Map() }));
+      e.visits.push(it);
+      if (prev && prev.place !== p) {
+        const pe = pIdx.get(prev.place);
+        e.from.set(prev.place, (e.from.get(prev.place) || 0) + 1);
+        if (pe) pe.to.set(p, (pe.to.get(p) || 0) + 1);
+      }
+      prev = it;
+    }
+    return pIdx;
+  }
+  function visitOf(s) {
+    const e = s.place && placeIndex().get(s.place); if (!e) return null;
+    return e.visits.find((v) => v.t0 < s.t1 && v.t1 > s.t0) || null;
+  }
+  const agoSpan = (ms) => { const d = ms / DAY; return d < 2 ? 'yesterday' : d < 14 ? Math.round(d) + ' days ago' : d < 60 ? Math.round(d / 7) + ' weeks ago' : d < 365 * 1.5 ? Math.round(d / 30.4) + ' months ago' : (d / 365).toFixed(d < 3650 ? 1 : 0).replace(/\.0$/, '') + ' years ago'; };
+  const fullDate = (t) => dayLabel(t, { day: 'numeric', month: 'short', year: 'numeric' });
+  const hm = (h) => String(Math.floor(h) % 24).padStart(2, '0') + ':' + String(Math.round((h % 1) * 60) % 60).padStart(2, '0');
+  const WDAYS = ['Sundays', 'Mondays', 'Tuesdays', 'Wednesdays', 'Thursdays', 'Fridays', 'Saturdays'];
+  const pname = (q) => { const t = q && placeLabelText(q); return t ? '<b>' + esc(t) + '</b>' : ''; };
+  const homePlace = () => places.find((q) => { const k = placeKind(q); return k && k.id === 'home'; }) || null;
+  function insightsFor(s) {
+    const p = s.place, e = p && placeIndex().get(p);
+    if (!e) return [];
+    const V = e.visits, v = visitOf(s) || V[0], vi = V.indexOf(v), out = [], add = (score, icon, html, cat) => { if (!out.some((o) => o.cat && o.cat === cat)) out.push({ score, icon, html, cat }); };
+    const k = placeKind(p), kid = k ? k.id : '', dur = (x) => x.t1 - x.t0, n = V.length;
+    const days = new Set(V.map((x) => dayKey(x.t0))).size, span = Math.max(7 * DAY, V[n - 1].t1 - V[0].t0), weeks = span / (7 * DAY);
+    const hours = V.reduce((a, x) => a + dur(x), 0) / 3.6e6;
+    // new, or first visit long ago
+    if (n === 1) add(100, 'sparkle', 'First time here: a new place on your map', 'first');
+    else if (vi === 0) add(90, 'sparkle', 'Your very first visit here. You came back ' + (n - 1) + (n === 2 ? ' more time' : ' more times') + ' since', 'first');
+    else if (kid !== 'home' && v.t0 - V[0].t0 > 45 * DAY) add(60 + Math.min(20, (v.t0 - V[0].t0) / (365 * DAY) * 6), 'calendar', 'You first came here on <b>' + fullDate(V[0].t0) + '</b>, ' + agoSpan(v.t0 - V[0].t0), 'first');
+    // the gap since the last visit
+    if (vi > 0) {
+      const gap = v.t0 - V[vi - 1].t1;
+      if (gap > 90 * DAY) add(88, 'history', 'Back after ' + agoSpan(gap).replace(' ago', '') + ': the last time was <b>' + fullDate(V[vi - 1].t0) + '</b>', 'gap');
+      else if (kid !== 'home' && dayKey(V[vi - 1].t0) === dayKey(v.t0)) add(42, 'history', 'Your second visit here today', 'gap');
+      else if (kid !== 'home' && gap < 1.6 * DAY) add(35, 'history', 'You were here yesterday too', 'gap');
+      else if (kid !== 'home' && gap > 3 * DAY) add(28, 'history', 'Last visit: ' + agoSpan(gap) + ' (' + dayLabel(V[vi - 1].t0, { day: 'numeric', month: 'short' }) + ')', 'gap');
+    }
+    // slept here (away from home)
+    const nightMid = dayKey(v.t0) + DAY + 3 * 3.6e6, nightPrev = dayKey(v.t0) + 3 * 3.6e6;
+    if (kid !== 'home' && ((v.t0 < nightMid && v.t1 > nightMid) || (v.t0 < nightPrev && v.t1 > nightPrev))) add(80, 'moon', p.nights && p.nights.size > 1 ? 'You spent the night here, as on ' + (p.nights.size - 1) + ' other ' + (p.nights.size === 2 ? 'night' : 'nights') : 'You spent the night here', 'night');
+    // how often and how much
+    if (n >= 4) {
+      const perWeek = days / weeks;
+      if (perWeek >= 4.5) add(58, 'clock', 'You spend about <b>' + (hours / (span / DAY)).toFixed(1).replace(/\.0$/, '') + ' h a day</b> here', 'often');
+      else if (perWeek >= 0.8) add(50, 'chart', 'About <b>' + Math.round(perWeek) + (Math.round(perWeek) === 1 ? ' time' : ' times') + ' a week</b>, ' + (hours / weeks).toFixed(1).replace(/\.0$/, '') + ' h a week here', 'often');
+      else if (perWeek * 4.35 >= 0.9) add(44, 'chart', 'About ' + Math.round(perWeek * 4.35) + (Math.round(perWeek * 4.35) === 1 ? ' time' : ' times') + ' a month', 'often');
+    }
+    // rank and favourites
+    const byTime = places.slice().sort((a, b) => b.hours - a.hours), rank = byTime.indexOf(p) + 1;
+    if (rank === 1 && n >= 3) add(52, 'star', 'The place where you spend the most time', 'rank');
+    else if (rank > 1 && rank <= 5 && n >= 3) add(48, 'star', 'Your <b>#' + rank + '</b> place by time spent', 'rank');
+    const type = kid && kid !== 'home' && kid !== 'work' && kid !== 'other' ? k.label.toLowerCase() : p.googleType && !/^(home|work|unknown|place|stopped|aliased_location)$/i.test(p.googleType) ? p.googleType.toLowerCase().replace(/_/g, ' ') : '';
+    if (type && n >= 2) {
+      const same = places.filter((q) => { const qk = placeKind(q); return (qk && qk.label.toLowerCase() === type) || (q.googleType && q.googleType.toLowerCase().replace(/_/g, ' ') === type); });
+      if (same.length > 1 && same.sort((a, b) => b.visits - a.visits)[0] === p) add(70, 'star', 'Your favourite ' + esc(type) + ' (' + n + ' visits, more than the other ' + (same.length - 1) + ')', 'fav');
+      else if (same.length === 1 && n >= 4) add(55, 'star', 'Your go-to ' + esc(type), 'fav');
+    }
+    // where you come from and go to
+    const top = (m) => { let b = null, c = 0, t = 0; for (const [q, x] of m) { t += x; if (x > c) { c = x; b = q; } } return b && c >= 2 && c / t >= 0.35 ? { q: b, c, t } : null; };
+    const prevStay = (() => { let x = s.prev; while (x && x.kind !== 'stay') x = x.prev; return x; })();
+    const fr = top(e.from);
+    if (fr && pname(fr.q)) add(fr.c / fr.t > 0.6 ? 62 : 54, 'route', 'You usually get here from ' + pname(fr.q) + (prevStay && prevStay.place === fr.q ? ', like today' : '') + ' (' + fr.c + ' of ' + fr.t + ' times)', 'from');
+    const to = top(e.to);
+    if (to && pname(to.q)) add(46, 'route', 'From here you usually go on to ' + pname(to.q), 'to');
+    // arrival time
+    if (n >= 4) {
+      const hs = V.map((x) => new Date(x.t0).getHours() + new Date(x.t0).getMinutes() / 60), ang = hs.map((h) => (h / 24) * 2 * Math.PI);
+      const cx = ang.reduce((a, b) => a + Math.cos(b), 0) / n, cy = ang.reduce((a, b) => a + Math.sin(b), 0) / n, R = Math.hypot(cx, cy);
+      if (R > 0.85 && v.t0 >= curDay) {
+        const mean = ((Math.atan2(cy, cx) / (2 * Math.PI)) * 24 + 24) % 24, today = hs[vi], diff = Math.round((((today - mean + 36) % 24) - 12) * 60);
+        add(56, 'clock', 'You usually arrive around <b>' + hm(mean) + '</b>' + (Math.abs(diff) < 15 ? ', right on time today' : ', today ' + fmtDur(Math.abs(diff) * 60000) + (diff > 0 ? ' later' : ' earlier')), 'arrive');
+      }
+    }
+    // weekdays
+    if (n >= 5) {
+      const wd = new Array(7).fill(0); V.forEach((x) => wd[new Date(x.t0).getDay()]++);
+      const best = wd.indexOf(Math.max(...wd)), we = (wd[0] + wd[6]) / n, wk = 1 - we;
+      if (we >= 0.8) add(53, 'calendar', 'Almost always on weekends', 'wday');
+      else if (wd[best] / n >= 0.45) add(47, 'calendar', 'Mostly on <b>' + WDAYS[best] + '</b>', 'wday');
+      else if (wk >= 0.95 && n >= 8) add(38, 'calendar', 'A weekday place: you are hardly ever here at weekends', 'wday');
+    }
+    // this visit compared to the others
+    if (n >= 3) {
+      const ds = V.map(dur).sort((a, b) => a - b), med = ds[n >> 1];
+      if (dur(v) >= ds[n - 1]) add(74, 'clock', 'Your longest visit here ever', 'long');
+      else if (dur(v) >= 2 * med && med > 0) add(50, 'clock', 'Longer than usual: you normally stay about ' + fmtDur(med), 'long');
+      else if (dur(v) <= 0.4 * med) add(44, 'clock', 'A quick stop: you usually stay about ' + fmtDur(med), 'long');
+    }
+    // distance from home
+    const home = homePlace();
+    if (home && home !== p) {
+      const d = TL.haversine([p.lat, p.lng], [home.lat, home.lng]);
+      if (d > 50000) add(66, 'home', 'Far from home: ' + Math.round(d / 1000) + ' km away', 'dist');
+      else if (d > 400) add(26, 'home', fmtDist(d) + ' from home', 'dist');
+    }
+    if (n >= 2) add(22, 'pin', 'Visit #' + (vi + 1) + ' of ' + n + ' · ' + Math.round(hours) + ' h here in total', 'total');
+    return out.sort((a, b) => b.score - a.score).slice(0, 5);
   }
 
   // ---- Playback ----
@@ -728,7 +931,7 @@
     raf = requestAnimationFrame(tick);
   }
   $('play').onclick = () => {
-    buzz();
+    buzz(); endStory(true);
     if (playing) return stop();
     if (waitingPlay != null) { waitingPlay = null; loadingUi(null); $('toast').style.display = 'none'; startPlay(); return; }   // "start now"
     if (!scenes.items.length) return;
@@ -1162,7 +1365,7 @@
     if (askIdx + 1 < askQueue.length) { askIdx++; askPlace = askQueue[askIdx]; const q = questionFor(askPlace); askStage = q ? 'confirm' : 'choose'; askKind = null; focusPlace(); renderAsk(); }
     else closeAsk();
   }
-  function refreshDay() { const fr = frac; showDay(curDay); $('scrub').value = Math.round(fr * 100000); seek(fr); }
+  function refreshDay() { const fr = frac, st = story && !story.anim ? story.s.n : 0; showDay(curDay); $('scrub').value = Math.round(fr * 100000); seek(fr); if (st) { const s = scenes.items.find((x) => x.kind === 'stay' && x.n === st); if (s) storyAt(s, false); } }
   function saveLabel(p, name, kind, skip) {
     const l = labelFor(p);
     if (l) Object.assign(l, { name, kind, skip: !!skip }); else labels.push({ lat: p.lat, lng: p.lng, name, kind, skip: !!skip });

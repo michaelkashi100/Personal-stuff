@@ -26,6 +26,8 @@ In the Path lab, **Tune automatically** runs `tune.js` in a worker (`tune-worker
 
 UI: one icon set (inline SVG, `ICON` in `app.js`), design tokens in `index.html`, screen wake lock while the app is open, and a finished day moves on to the next one. `test/ui-behavior.js` covers wake lock, day navigation, auto-advance, speed and the two-step forget.
 
+Story mode: a day opens as an overview of its places (numbered pins, named) over the dimmed path. Tap the path and that trip plays, sped up, to the place it leads to; a card then tells you about the place (first visit, time since the last one, how often and how long you are there, when you usually arrive, where you usually come from and go next, favourite of its kind, a night away, distance from home) and waits for **Next stop**. Tap a pin to jump straight to its card. `insightsFor` in `app.js` picks the five most telling facts.
+
 Place names: stays are grouped into places (`TL.clusterPlaces`, 150 m) and the most visited unnamed places are asked about ("Is this your home?" / "Is this where you work?" from where the nights and days are spent, otherwise "What is this place for you?"). Names are kept only in this browser (`localStorage`, key `tl-places`). `test/places.js` and `test/places-ui.js` cover it.
 
 ## Android app (background recording)
