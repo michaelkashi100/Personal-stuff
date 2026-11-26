@@ -519,6 +519,23 @@
   // Camera: zoomed in on the traveller by default; during a trip the view grows from "street level around the
   // marker" to "the whole trip", holds, then shrinks back. Interpolating the view *box* (not zoom and centre
   // separately) keeps the marker inside the frame. The same easing drives the speed along the trip.
+  // Move the camera every frame without a "view reset". map.setView(.., {animate:false}) with a new zoom resets the view,
+  // and a reset throws away every map square on screen, so the map went black while the replay played. This moves
+  // the map the way Leaflet's own flyTo does: the squares already shown stay (scaled) until the sharper ones arrive.
+  // Every 250 ms the move is "ended" so the coarse layer, lines and pins catch up.
+  let camMoving = false, camEndAt = 0, camEndT = 0;
+  function camTo(c, z) {
+    z = map._limitZoom(z);
+    if (!map._loaded) { map.setView(c, z, { animate: false }); return; }
+    const ctr = L.latLng(c), zc = z !== map.getZoom();
+    if (!zc && ctr.equals(map.getCenter())) return;
+    map._stop();
+    if (!camMoving) { camMoving = true; camEndAt = performance.now() + 250; map._moveStart(zc, false); }
+    map._move(ctr, z);
+    clearTimeout(camEndT);
+    const end = () => { if (!camMoving) return; camMoving = false; map._moveEnd(true); };
+    if (performance.now() >= camEndAt) end(); else camEndT = setTimeout(end, 120);
+  }
   // Overview: the whole day's path as large as the map allows (only the small clock in the corner to keep clear).
   let fitKey = '';
   function fitWholeDay() {
@@ -618,7 +635,7 @@
       const cam = cameraFor(s, p, ll);
       // pinch while playing = zoom bias; zooming in is only applied while parked (on a trip the car must stay in frame)
       const z = Math.max(2, Math.min(19, cam.zoom + (s.kind === 'stay' ? zoomBias : Math.min(0, zoomBias))));
-      map.setView(cam.center, z, { animate: false });
+      camTo(cam.center, z);
     }
     marker.setLatLng(ll);
     // Routes of the current trip light up as they are driven; the progressive trail follows the current leg.
