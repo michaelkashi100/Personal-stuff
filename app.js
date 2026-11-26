@@ -209,7 +209,7 @@
   function start(d, tl) {
     d.visits.sort((a, b) => a.start - b.start); d.trips.sort((a, b) => a.start - b.start);
     const first = !data;
-    if (map) { stop(); map.remove(); map = null; }           // "Change file" / new recordings while the app is open
+    if (map) { stop(); dropDotCanvas(); map.remove(); map = null; }           // "Change file" / new recordings while the app is open
     data = d; timeline = tl || TL.analyze(d, cleanOpts()); places = TL.clusterPlaces(timeline); loadPhone(); learnWifi(timeline);
     $('import').style.display = 'none';
     $('app').style.display = 'flex';
@@ -557,6 +557,7 @@
           .bindTooltip(esc(s.name) + ' · ' + clock(s.t0) + '–' + clock(s.t1) + ' (' + fmtDur(s.t1 - s.t0) + ')' + (phoneOn() && s.t1 > phoneSince ? ' · ' + fmtDur(phoneMs(Math.max(s.t0, phoneSince), s.t1)) + ' on phone' : '')).addTo(dayLayer);
       }
     }
+    drawDots(d);
     trailGlow = L.polyline([], { weight: 13, opacity: 0.22, lineCap: 'round', interactive: false }).addTo(dayLayer);
     trail = L.polyline([], { weight: 5, opacity: 1, lineCap: 'round', interactive: false }).addTo(dayLayer);
     marker = L.marker([0, 0], { icon: L.divIcon({ className: 'live', html: CAR, iconSize: [30, 30] }), interactive: false, keyboard: false, zIndexOffset: 1000 }).addTo(dayLayer);
@@ -732,6 +733,23 @@
   const LAB_PART = { prior: 'Starting point (how often GPS jumps here)', fit: 'Distance from the path the other fixes describe', turn: 'Turn / out-and-back', speed: 'Speed (could you get here and back?)', accel: 'Acceleration', signal: 'Signal quality', alt: 'Altitude', build: 'Buildings', fam: 'Usual route' };
   const LAB_WHY = { never: 'Ignored: a country you are never in (GPS interference).', abroad: 'Ignored: abroad, but too short or sudden to be a real trip.', wifi: 'Same Wi-Fi network: you were not moving, this fix wandered off.' };
   let lab = null, labFixes = null, labDataRef = null;
+  // The day's GPS readings as small dots along the way, coloured by how much the cleaning trusts them (green = real,
+  // red = a jump). Readings in places you are never at are not drawn. Switch: Insights > Playback.
+  const dotsOn = () => readLS('tl-dots', true) !== false;
+  let dotsDrawn = 0, dotCanvas = null, dotMap = null;
+  function dropDotCanvas() { if (dotCanvas && map && map.hasLayer(dotCanvas)) map.removeLayer(dotCanvas); }   // also cancels a pending redraw
+  function drawDots(d) {
+    dotsDrawn = 0;
+    if (!dotsOn() || !data) return;
+    const F = labDayFixes(d); if (!F.length) return;
+    let res; try { res = TL.cleanApi.clean(F, Object.assign(cleanOpts(), { noParts: true })); } catch (e) { return; }
+    if (dotMap !== map) { dotCanvas = L.canvas({ padding: 0.5 }); dotMap = map; }
+    for (let i = 0; i < F.length; i++) {
+      if (F[i].t < d || F[i].t >= d + DAY || res.why[i] === 'never' || res.why[i] === 'abroad') continue;
+      L.circleMarker([F[i].lat, F[i].lng], { renderer: dotCanvas, radius: 2.3, stroke: false, fillColor: confColor(res.c[i]), fillOpacity: 0.75, interactive: false }).addTo(dayLayer);
+      dotsDrawn++;
+    }
+  }
   const confColor = (c) => { const h = Math.round(120 * Math.max(0, Math.min(1, c))); return 'hsl(' + h + ',85%,52%)'; };
   function labAllFixes() {                                     // every fix of the loaded data, once per data set
     if (labDataRef !== data) { labDataRef = data; labFixes = TL.collectFixes(data).filter((f) => f.acc <= TL.CFG.maxAcc); }
@@ -748,7 +766,7 @@
     stop(); leaveLive(); buzz();
     const saved = readLS('tl-clean', {});
     lab = { P: Object.assign({}, TL.cleanApi.DEFAULTS, saved), saved: JSON.stringify(saved), show: { raw: true, path: true, dots: true }, layer: L.layerGroup(), canvas: L.canvas({ padding: 0.5 }), sel: null };
-    map.removeLayer(dayLayer); lab.layer.addTo(map);
+    map.removeLayer(dayLayer); dropDotCanvas(); lab.layer.addTo(map);
     $('lab').hidden = false; document.body.classList.add('lab-open'); map.invalidateSize();
     renderLabPanel(); runLab(true);
     if (TL.osm && osmOn() && lab.res) {                         // buildings for this day, then decide again with them
@@ -985,7 +1003,7 @@
   window.__tlPt = (lat, lng) => { const q = map.latLngToContainerPoint([lat, lng]), r = $('map').getBoundingClientRect(); return { x: r.left + q.x, y: r.top + q.y }; };   // test hook
   window.__tlMoves = () => timeline.filter((it) => it.kind === 'move').map((it) => ({ mode: it.mode, refined: !!it.refined, path: it.path }));   // test hook (read-only)
   window.__tlLab = () => (lab && lab.res ? { n: lab.F.length, sel: lab.sel, c: Array.from(lab.res.c), why: lab.res.why, fixes: lab.F.map((f) => [f.lat, f.lng]) } : null);   // test hook (read-only)
-  window.__tl = () => { const el = marker && marker.getElement(), cur = scenes.items.length ? locate(frac * scenes.V).s : null; return { zoom: map.getZoom(), heading, frac, V: scenes.V, items: scenes.items.map((s) => (s.kind === 'move' ? s.mode : 'stay')), cur: cur ? (cur.kind === 'move' ? cur.mode : 'stay') : null, car: !!(el && el.classList.contains('drive')), timeline: timeline.length, day: curDay, playing, dragging: !!(map && map.dragging.enabled()), live, follow, zoomBias, speed, target: lastTarget, centre: map ? [map.getCenter().lat, map.getCenter().lng] : null, me }; };   // test hook (read-only)
+  window.__tl = () => { const el = marker && marker.getElement(), cur = scenes.items.length ? locate(frac * scenes.V).s : null; return { zoom: map.getZoom(), heading, frac, V: scenes.V, items: scenes.items.map((s) => (s.kind === 'move' ? s.mode : 'stay')), cur: cur ? (cur.kind === 'move' ? cur.mode : 'stay') : null, car: !!(el && el.classList.contains('drive')), timeline: timeline.length, day: curDay, playing, dragging: !!(map && map.dragging.enabled()), live, follow, zoomBias, speed, target: lastTarget, dots: dotsDrawn, centre: map ? [map.getCenter().lat, map.getCenter().lng] : null, me }; };   // test hook (read-only)
 
   async function dataInfo() {
     const el = $('dinfo'); if (!el) return;
@@ -1267,6 +1285,7 @@
       `<div class="card"><h2>Your places</h2>${pend ? `<div class="cta"><div class="t"><b>${pend} place${pend > 1 ? 's need' : ' needs'} a name</b><span>A quick question about each.</span></div><button class="btn primary sm" id="askStart" type="button">Start</button></div>` : ''}<ul class="rows">${placeRows || '<li class="empty">No stops yet.</li>'}</ul></div>` +
       `<div class="card"><h2>Playback</h2>` +
       `<div class="setting"><div class="t"><b>Keep screen on</b><span id="awakeNote"></span></div>${sw('swAwake', 'Keep screen on', keepOn)}</div>` +
+      `<div class="setting"><div class="t"><b>Show GPS readings</b><span>Small dots along the way: green = trusted, red = treated as a jump.</span></div>${sw('swDots', 'Show GPS readings', dotsOn())}</div>` +
       `<div class="setting"><div class="t"><b>Continue to the next day</b><span>When a day ends, the replay moves on and keeps playing.</span></div>${sw('swNext', 'Continue to the next day', autoNext)}</div></div>` +
       osmCard() +
       `<div class="card"><h2>Your data</h2><p class="note" id="dinfo" style="margin-top:0"></p><div class="actions"><button class="btn" id="chg" type="button"><span data-icon="refresh"></span>Change file</button><button class="btn danger" id="forget" type="button"><span data-icon="trash"></span><span class="lbl">Forget my data</span></button></div><p class="note">Your file and place names are kept only in this browser, on this phone. Nothing is uploaded.</p></div>` +
@@ -1276,6 +1295,7 @@
     const st = $('askStart'); if (st) st.onclick = () => openAsk(pendingPlaces().slice(0, 5));
     const toggle = (id, get, set) => { const b = $(id); b.onclick = () => { const on = !get(); set(on); b.setAttribute('aria-checked', String(on)); buzz(); }; };
     toggle('swAwake', () => keepOn, (on) => { keepOn = on; try { localStorage.setItem('tl-awake', on ? '1' : '0'); } catch (e) {} if (on) keepAwake(); else releaseAwake(); wakeInfo(); });
+    toggle('swDots', dotsOn, (on) => { writeLS('tl-dots', on); if (curDay != null) refreshDay(); });
     toggle('swNext', () => autoNext, (on) => { autoNext = on; try { localStorage.setItem('tl-autonext', on ? '1' : '0'); } catch (e) {} });
     $('chg').onclick = () => $('file').click();
     let armedT = 0;
