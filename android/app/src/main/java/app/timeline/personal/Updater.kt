@@ -160,7 +160,8 @@ object WebBundle {
 
     fun update(c: Context): Outcome {
         return try {
-            val con = URL(Updater.SITE + "bundle.json").openConnection() as HttpURLConnection
+            // a unique address each time: GitHub's servers keep copies for 10 minutes, so a plain request can get an old list
+            val con = URL(Updater.SITE + "bundle.json?t=" + System.currentTimeMillis()).openConnection() as HttpURLConnection
             con.connectTimeout = 10_000; con.readTimeout = 20_000; con.useCaches = false
             con.setRequestProperty("Cache-Control", "no-cache"); con.setRequestProperty("User-Agent", "TimelineApp")
             if (con.responseCode != 200) return Outcome.Failed("HTTP ${con.responseCode}")
@@ -174,7 +175,7 @@ object WebBundle {
             for (e in remote.files) {
                 val dest = File(staging, e.path)
                 dest.parentFile?.mkdirs()
-                fetch(Updater.SITE + e.path, dest, e)
+                fetch(Updater.SITE + e.path + "?b=" + remote.built, dest, e)   // this build's copy, never an older cached one
             }
             File(staging, "bundle.json").writeText(text)
 
